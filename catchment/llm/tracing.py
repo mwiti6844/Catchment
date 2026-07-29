@@ -6,6 +6,15 @@ forget. Instead the router wraps whatever provider it builds in
 :class:`TracedProvider`, so the guarantee is structural: an untraced provider
 is not reachable through :func:`catchment.llm.registry.get_provider`.
 
+**SDK and server versions are coupled.** This module targets the Langfuse v2
+SDK, which posts to ``/api/public/ingestion``, matching the
+``langfuse/langfuse:2`` server in docker-compose (Postgres only). The v3+ SDK
+posts OTLP to ``/api/public/otel/v1/traces``, which a v2 server does not
+expose — and the failure is silent: ``auth_check()`` still passes because it
+hits a different endpoint, so calls look traced while nothing is recorded.
+If you upgrade one, upgrade both, and re-run the integration check that a
+trace actually lands.
+
 Prompts sent to Langfuse contain ingested content by design — that is the point
 of tracing a classifier decision. Langfuse is self-hosted (CLAUDE.md), so that
 content stays on infrastructure we control. Application logs, by contrast, get
@@ -53,23 +62,27 @@ class TracedProvider:
             )
             return self._provider.complete(request)
 
-        with client.start_as_current_observation(
+        trace = client.trace(
             name=f"{self._provider.name}.complete",
-            as_type="generation",
-            input=[{"role": m.role, "content": m.content} for m in request.messages],
+            metadata={**request.metadata, "provider": self._provider.name},
+        )
+        generation = trace.generation(
+            name="completion",
             model=model,
+            input=[{"role": m.role, "content": m.content} for m in request.messages],
             model_parameters={
                 "max_tokens": request.max_tokens or self._settings.llm_max_tokens,
                 "response_format": request.response_format,
             },
-            metadata={**request.metadata, "provider": self._provider.name},
-        ) as generation:
+        )
+
+        try:
             result = self._provider.complete(request)
-            generation.update(
-                output=result.text,
-                usage_details=_usage(result),
-            )
-            trace_id = client.get_current_trace_id()
+        except Exception as error:
+            generation.end(level="ERROR", status_message=type(error).__name__)
+            raise
+
+        generation.end(output=result.text, usage=_usage(result))
 
         logger.info(
             "llm call complete",
@@ -78,19 +91,20 @@ class TracedProvider:
                 model=result.model,
                 input_tokens=result.input_tokens,
                 output_tokens=result.output_tokens,
-                trace_id=trace_id,
+                trace_id=trace.id,
             ),
         )
-        return result.with_trace(trace_id)
+        return result.with_trace(trace.id)
 
     def _resolve_client(self) -> Any | None:
         if self._client is not None:
             return self._client
-        return build_langfuse_client(self._settings)
+        return get_langfuse_client(self._settings)
 
 
-def _usage(result: CompletionResult) -> dict[str, int]:
-    usage: dict[str, int] = {}
+def _usage(result: CompletionResult) -> dict[str, Any]:
+    """Langfuse v2 usage shape."""
+    usage: dict[str, Any] = {"unit": "TOKENS"}
     if result.input_tokens is not None:
         usage["input"] = result.input_tokens
     if result.output_tokens is not None:
@@ -110,9 +124,69 @@ def build_langfuse_client(settings: Settings | None = None) -> Any | None:
 
     from langfuse import Langfuse
 
-    return Langfuse(
+    client = Langfuse(
         public_key=resolved.langfuse_public_key.get_secret_value(),
         secret_key=resolved.langfuse_secret_key.get_secret_value(),
         host=resolved.langfuse_host,
-        environment=resolved.env,
     )
+
+    # Verify once, at construction. Ingestion is fire-and-forget: a wrong key
+    # or the wrong host returns 401 on a background thread and the SDK drops
+    # the batch without raising, so calls look traced while nothing is
+    # recorded. Keys generated on Langfuse Cloud against a self-hosted host
+    # fail exactly this way. Checking here converts a silent gap in the audit
+    # trail into one loud line at startup.
+    if not _auth_ok(client, resolved.langfuse_host):
+        return None
+    return client
+
+
+def _auth_ok(client: Any, host: str) -> bool:
+    try:
+        if client.auth_check():
+            return True
+    except Exception as error:  # noqa: BLE001 - never take ingestion down
+        logger.error(
+            "langfuse auth check failed; LLM calls will NOT be traced",
+            extra=log_context(langfuse_host=host, error=type(error).__name__),
+        )
+        return False
+
+    logger.error(
+        "langfuse rejected the configured credentials; LLM calls will NOT be "
+        "traced. Check the keys were generated on this host",
+        extra=log_context(langfuse_host=host),
+    )
+    return False
+
+
+_client: Any | None = None
+
+
+def get_langfuse_client(settings: Settings | None = None) -> Any | None:
+    """Return the process-wide client, creating it on first use.
+
+    Shared because the SDK batches events on a background thread; a new client
+    per call would spawn a thread per completion and drop anything not yet
+    flushed when it was garbage-collected.
+    """
+    global _client
+
+    if _client is None:
+        _client = build_langfuse_client(settings)
+    return _client
+
+
+def flush_langfuse() -> None:
+    """Send anything still buffered. Called on shutdown.
+
+    The SDK batches, so a container that stops without flushing loses the
+    trailing batch — which is exactly the traces for the work it did last.
+    """
+    global _client
+
+    if _client is not None:
+        try:
+            _client.flush()
+        finally:
+            _client = None

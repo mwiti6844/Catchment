@@ -17,6 +17,7 @@ from catchment.classification.embeddings import close_embedder
 from catchment.config import Settings, get_settings
 from catchment.ingestion import whatsapp
 from catchment.jobs.queue import close_pipeline_queue
+from catchment.llm.tracing import flush_langfuse
 from catchment.logging_config import configure_logging, get_logger, log_context
 from catchment.storage.db import dispose_engine
 
@@ -45,6 +46,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        flush_langfuse()
         close_pipeline_queue()
         close_embedder()
         dispose_engine()

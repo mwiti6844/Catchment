@@ -76,3 +76,66 @@ def test_settings_are_frozen(settings: Settings) -> None:
 
 def test_get_settings_is_cached() -> None:
     assert get_settings() is get_settings()
+
+
+def test_langfuse_accepts_its_own_variable_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Langfuse's docs name these without our prefix; both must work.
+
+    Missing tracing only warns, so a silently-dropped key is easy to miss.
+    """
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-lf-unprefixed")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-lf-unprefixed")
+    monkeypatch.setenv("LANGFUSE_BASE_URL", "http://langfuse:3000")
+
+    settings = Settings()
+
+    public, secret = settings.require_langfuse()
+    assert public.get_secret_value() == "pk-lf-unprefixed"
+    assert secret.get_secret_value() == "sk-lf-unprefixed"
+    assert settings.langfuse_host == "http://langfuse:3000"
+
+
+def test_prefixed_langfuse_name_wins_over_the_bare_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-bare")
+    monkeypatch.setenv("CATCHMENT_LANGFUSE_PUBLIC_KEY", "pk-prefixed")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-bare")
+
+    public, _ = Settings().require_langfuse()
+
+    assert public.get_secret_value() == "pk-prefixed"
+
+
+@pytest.mark.parametrize(
+    ("variable", "attribute"),
+    [
+        ("CATCHMENT_LLM_MODEL", "llm_model"),
+        ("CATCHMENT_LLM_PROVIDER", "llm_provider"),
+        ("CATCHMENT_EMBEDDER_URL", "embedder_url"),
+        ("CATCHMENT_EMBEDDING_MODEL", "embedding_model"),
+    ],
+)
+def test_blank_env_var_falls_back_to_the_default(
+    monkeypatch: pytest.MonkeyPatch, variable: str, attribute: str
+) -> None:
+    """`CATCHMENT_LLM_MODEL=` is what copying .env.example leaves behind.
+
+    Read literally it shadows the default and the request goes out with an
+    empty model, failing at the provider — far from the real cause.
+    """
+    monkeypatch.setenv(variable, "")
+
+    value = getattr(Settings(), attribute)
+
+    assert value, f"{attribute} fell back to an empty value"
+    assert value == Settings.model_fields[attribute].default
+
+
+def test_whitespace_only_env_var_also_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CATCHMENT_LLM_MODEL", "   ")
+    assert Settings().llm_model == "openai/gpt-oss-120b"

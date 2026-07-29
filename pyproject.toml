@@ -19,7 +19,10 @@ dependencies = [
     "rq>=2.0",
     "redis>=5.2",
     "httpx>=0.28",
-    "langfuse>=2.53",
+    # Pinned to v2 to match the langfuse/langfuse:2 server in docker-compose.
+    # The v3+ SDK posts OTLP to an endpoint a v2 server does not expose, and
+    # fails silently: auth_check passes while nothing is ingested.
+    "langfuse>=2.53,<3",
     "groq>=1.6",
 ]
 

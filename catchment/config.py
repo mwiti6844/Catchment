@@ -9,9 +9,17 @@ value, so an accidental ``logger.info(settings)`` cannot leak them.
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import Field, PostgresDsn, RedisDsn, SecretStr, field_validator
+from pydantic import (
+    AliasChoices,
+    Field,
+    PostgresDsn,
+    RedisDsn,
+    SecretStr,
+    ValidationInfo,
+    field_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Environment = Literal["development", "test", "production"]
@@ -81,9 +89,29 @@ class Settings(BaseSettings):
     max_new_tags_per_item: int = Field(default=2, ge=0, le=8)
 
     # --- Langfuse (self-hosted) ---
-    langfuse_host: str = "http://localhost:3000"
-    langfuse_public_key: SecretStr | None = None
-    langfuse_secret_key: SecretStr | None = None
+    # Also accepts Langfuse's own variable names. Their docs and dashboard tell
+    # you to set LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY / LANGFUSE_BASE_URL,
+    # so requiring a CATCHMENT_ prefix here silently drops keys that were
+    # copied correctly — the failure is a warning log, not an error, which
+    # makes it easy to miss. The prefixed name wins when both are set.
+    langfuse_host: str = Field(
+        default="http://localhost:3000",
+        validation_alias=AliasChoices(
+            "CATCHMENT_LANGFUSE_HOST", "LANGFUSE_BASE_URL", "LANGFUSE_HOST"
+        ),
+    )
+    langfuse_public_key: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "CATCHMENT_LANGFUSE_PUBLIC_KEY", "LANGFUSE_PUBLIC_KEY"
+        ),
+    )
+    langfuse_secret_key: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "CATCHMENT_LANGFUSE_SECRET_KEY", "LANGFUSE_SECRET_KEY"
+        ),
+    )
 
     # --- Ingestion connectors ---
     # App secret used to verify the X-Hub-Signature-256 header on webhooks.
@@ -97,6 +125,28 @@ class Settings(BaseSettings):
     imap_password: SecretStr | None = None
     imap_folder: str = "INBOX"
     imap_batch_size: int = Field(default=50, ge=1, le=500)
+
+    @field_validator(
+        "llm_provider",
+        "llm_model",
+        "embedding_model",
+        "embedder_url",
+        "langfuse_host",
+        "imap_folder",
+        mode="before",
+    )
+    @classmethod
+    def _blank_means_unset(cls, value: Any, info: ValidationInfo) -> Any:
+        """Treat an empty environment variable as absent, not as an empty value.
+
+        Copying .env.example leaves lines like ``CATCHMENT_LLM_MODEL=`` behind.
+        Pydantic reads that as the empty string and it shadows the default, so
+        the request goes out with ``model=""`` and fails at the provider — a
+        long way from the actual cause.
+        """
+        if isinstance(value, str) and not value.strip():
+            return cls.model_fields[str(info.field_name)].default
+        return value
 
     @field_validator("langfuse_host")
     @classmethod

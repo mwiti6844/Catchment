@@ -44,34 +44,42 @@ class FakeProvider:
 
 class FakeGeneration:
     def __init__(self) -> None:
-        self.updates: list[dict[str, Any]] = []
+        self.ends: list[dict[str, Any]] = []
 
-    def update(self, **kwargs: Any) -> None:
-        self.updates.append(kwargs)
+    def end(self, **kwargs: Any) -> None:
+        self.ends.append(kwargs)
+
+
+class FakeTrace:
+    id = "trace-abc123"
+
+    def __init__(self, generation: FakeGeneration) -> None:
+        self.generations: list[dict[str, Any]] = []
+        self._generation = generation
+
+    def generation(self, **kwargs: Any) -> FakeGeneration:
+        self.generations.append(kwargs)
+        return self._generation
 
 
 class FakeLangfuse:
-    """Mimics the langfuse 4.x surface the tracer actually uses."""
+    """Mimics the langfuse v2 surface the tracer actually uses.
+
+    Shape matters: the v3+ SDK has a different one, and mixing SDK and server
+    majors fails silently in production.
+    """
 
     def __init__(self) -> None:
-        self.observations: list[dict[str, Any]] = []
+        self.traces: list[dict[str, Any]] = []
         self.generation = FakeGeneration()
+        self.trace_obj = FakeTrace(self.generation)
 
-    def start_as_current_observation(self, **kwargs: Any) -> Any:
-        self.observations.append(kwargs)
-        generation = self.generation
+    def trace(self, **kwargs: Any) -> FakeTrace:
+        self.traces.append(kwargs)
+        return self.trace_obj
 
-        class _Scope:
-            def __enter__(self) -> FakeGeneration:
-                return generation
-
-            def __exit__(self, *exc: Any) -> None:
-                return None
-
-        return _Scope()
-
-    def get_current_trace_id(self) -> str:
-        return "trace-abc123"
+    def flush(self) -> None:
+        return None
 
 
 @pytest.fixture(autouse=True)
@@ -143,11 +151,13 @@ def test_completion_is_recorded_as_a_generation() -> None:
         CompletionRequest(messages=PROMPT, model="m-1")
     )
 
-    observation = client.observations[0]
-    assert observation["as_type"] == "generation"
-    assert observation["model"] == "m-1"
-    assert observation["metadata"]["provider"] == "fake"
-    assert client.generation.updates[0]["usage_details"] == {"input": 11, "output": 3}
+    assert client.traces[0]["metadata"]["provider"] == "fake"
+    assert client.trace_obj.generations[0]["model"] == "m-1"
+    assert client.generation.ends[0]["usage"] == {
+        "unit": "TOKENS",
+        "input": 11,
+        "output": 3,
+    }
 
 
 def test_trace_id_is_returned_for_audit() -> None:
@@ -311,3 +321,62 @@ def test_malformed_responses_raise(groq_settings: Settings, response: Any) -> No
         build(FakeGroqClient(response=response), groq_settings).complete(
             CompletionRequest(messages=PROMPT)
         )
+
+
+# --------------------------------------------------------------------------- #
+# Tracing misconfiguration must be loud
+# --------------------------------------------------------------------------- #
+
+
+class RejectingLangfuse:
+    """A server that authenticates the health probe but rejects the keys.
+
+    This is what Langfuse Cloud keys pointed at a self-hosted instance do:
+    ingestion 401s on a background thread and the SDK drops the batch silently.
+    """
+
+    def __init__(self, *, raises: bool = False) -> None:
+        self.raises = raises
+
+    def auth_check(self) -> bool:
+        if self.raises:
+            raise RuntimeError("connection refused")
+        return False
+
+
+def test_bad_credentials_are_reported_as_an_error(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv("CATCHMENT_LANGFUSE_PUBLIC_KEY", "pk-lf-wrong")
+    monkeypatch.setenv("CATCHMENT_LANGFUSE_SECRET_KEY", "sk-lf-wrong")
+    monkeypatch.setattr(
+        "catchment.llm.tracing.Langfuse", lambda **_: RejectingLangfuse(), raising=False
+    )
+    import catchment.llm.tracing as tracing
+
+    monkeypatch.setitem(__import__("sys").modules, "langfuse", type(
+        "M", (), {"Langfuse": lambda **_: RejectingLangfuse()}
+    ))
+
+    with caplog.at_level(logging.ERROR):
+        client = tracing.build_langfuse_client(Settings())
+
+    assert client is None, "a rejected client must not be handed out"
+    assert any(r.levelno >= logging.ERROR for r in caplog.records)
+    assert "NOT be traced" in caplog.records[-1].getMessage()
+
+
+def test_unreachable_langfuse_is_reported_not_raised(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Losing tracing must never take ingestion down."""
+    monkeypatch.setenv("CATCHMENT_LANGFUSE_PUBLIC_KEY", "pk-lf-x")
+    monkeypatch.setenv("CATCHMENT_LANGFUSE_SECRET_KEY", "sk-lf-x")
+    monkeypatch.setitem(__import__("sys").modules, "langfuse", type(
+        "M", (), {"Langfuse": lambda **_: RejectingLangfuse(raises=True)}
+    ))
+    import catchment.llm.tracing as tracing
+
+    with caplog.at_level(logging.ERROR):
+        assert tracing.build_langfuse_client(Settings()) is None
+    assert "auth check failed" in caplog.records[-1].getMessage()
