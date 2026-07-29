@@ -153,6 +153,10 @@ development is unaffected. In production **only Caddy publishes ports** — the
 base file otherwise exposes Postgres, Redis, the embedder and Langfuse to the
 host, and `ufw` does not filter Docker-published ports. Always pass both files.
 
+Both `--env-file` flags matter too: they control Compose-time `${...}`
+interpolation, so dropping one lets `${VAR:-default}` variables silently fall
+back to defaults that may disagree with `.env`.
+
 ## Tracing (Langfuse)
 
 Self-hosted, Postgres-only (`langfuse/langfuse:2` — v3 additionally needs

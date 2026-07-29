@@ -7,7 +7,10 @@
 services:
   # The only internet-facing container. Terminates TLS and proxies to api.
   caddy:
-    image: caddy:latest
+    # Pinned by digest, not `latest`. A silently-changing proxy version on the
+    # one internet-facing container is the wrong thing to leave floating; a
+    # digest also means a rebuilt VPS gets the identical image.
+    image: caddy:2.11.4@sha256:844f60b64e4724a5aa8245e019dace0d3f199f7433ce6c57676cb30a920dbad9
     restart: unless-stopped
     ports:
       - "80:80"

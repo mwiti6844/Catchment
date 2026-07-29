@@ -30,15 +30,22 @@ the DuckDNS record current — see *Decisions left to you* below.
 
 ## 2. Provision the VPS (once)
 
+Provision from a **throwaway** clone under `/tmp`, then make the real checkout
+as `deploy`. Cloning as root puts the repository in `/root/catchment`, which is
+mode `0700` — the `deploy` user cannot read it, so a repository cloned in this
+step would be unusable in the next one.
+
 ```bash
 ssh root@<vps-ip>
-git clone <your-repo> catchment && cd catchment
-sudo ./deploy/provision.sh
+git clone https://github.com/mwiti6844/Catchment.git /tmp/catchment-provision
+/tmp/catchment-provision/deploy/provision.sh
 ```
 
 Installs Docker and the Compose plugin, restricts the firewall to 22/80/443,
 and creates an unprivileged `deploy` user in the `docker` group. It is
 idempotent — re-running it is safe and skips anything already done.
+
+`/tmp/catchment-provision` can be deleted afterwards; nothing depends on it.
 
 > **ufw does not filter Docker-published ports.** Docker inserts its rules
 > ahead of ufw's filter chain, so a published port is reachable from the
@@ -47,10 +54,22 @@ idempotent — re-running it is safe and skips anything already done.
 > Caddy's 80 and 443. **Always deploy with both compose files** — the base file
 > alone publishes Postgres, Redis, the embedder and Langfuse.
 
-Log out and back in as `deploy` (group membership only applies to new
-sessions).
+## 3. Reconnect as `deploy` and make the real checkout
 
-## 3. Configure
+Open a **second terminal** and confirm key-based login works *before* closing
+the root session — if the key copy did not take, the root session is your only
+way back in.
+
+```bash
+ssh deploy@<vps-ip>
+git clone https://github.com/mwiti6844/Catchment.git
+cd Catchment
+```
+
+A fresh login is required in any case: docker-group membership only applies to
+new sessions, so a shell opened before `provision.sh` ran cannot talk to Docker.
+
+## 4. Configure
 
 ```bash
 cp .env.example .env                        # application settings
@@ -63,16 +82,30 @@ Fill both in. Neither is ever committed — both are gitignored.
 token, and a Langfuse key pair (see the root README). `.env.production` needs
 only the domain and an ACME contact address.
 
-## 4. Start
+## 5. Start
 
 ```bash
 docker compose --env-file .env --env-file .env.production \
   -f docker-compose.yml -f docker-compose.prod.yml up -d
 ```
 
-Both `--env-file` flags are required. Passing any `--env-file` disables
-Compose's automatic loading of `.env`, so omitting the first one silently drops
-every application setting.
+Both `--env-file` flags are required, but not for the reason it might appear.
+The base file already injects `.env` into the app containers via `env_file:`, so
+`CATCHMENT_*` settings reach the application either way. What the CLI flag
+controls is which files feed **Compose-time `${...}` interpolation** of the
+YAML itself.
+
+Omitting `--env-file .env` therefore causes *interpolation drift*, not missing
+application settings:
+
+- variables written `${VAR:?...}` (the Langfuse project keys, the domain) fail
+  loudly at `config` time — no container starts;
+- variables written `${VAR:-default}` (`POSTGRES_USER`, `POSTGRES_PASSWORD`,
+  the port mappings) silently fall back to their defaults. If `.env` overrode
+  any of them, the database URL the app receives and the credentials Postgres
+  is created with would disagree.
+
+The silent half is the dangerous one, which is why both flags stay.
 
 Migrations run to completion before the API starts, as in local development.
 
@@ -85,7 +118,7 @@ curl -sS https://<your-subdomain>.duckdns.org/health
 
 `/health` returning JSON over HTTPS means TLS and the proxy are both working.
 
-## 5. Point Meta at the new URL
+## 6. Point Meta at the new URL
 
 In the Meta app dashboard → **WhatsApp → Configuration → Webhook → Edit**:
 
@@ -110,7 +143,7 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml \
 > binding is to the *app*, not the URL — changing the callback URL does not
 > undo it. No re-subscription needed.
 
-## 6. Decommission the quick tunnel
+## 7. Decommission the quick tunnel
 
 The Cloudflare quick tunnel (`cloudflared tunnel --url ...`) is **development
 only**: its hostname is random and changes on every restart, so Meta delivery
@@ -159,5 +192,23 @@ already fixed in the application's Uvicorn logger.
 - **Backups.** The `pgdata` volume holds everything ingested. No backup is
   configured.
 - **Non-root containers.** The app image already runs as an unprivileged user;
-  `caddy:latest` runs as root, which is upstream's default and needed to bind
-  80/443.
+  Caddy runs as root, which is upstream's default and needed to bind 80/443.
+
+## Before calling this production-safe
+
+In priority order — none of these are code changes, and the first is the one
+that matters most:
+
+1. **Backups.** `pgdata` will hold everything ever ingested. Configure
+   encrypted off-machine Postgres backups *before* accumulating content worth
+   keeping, not after.
+2. **Confirm the VPS has static IPv4** before adding a DuckDNS updater. If it
+   is static, do not introduce another token-bearing service.
+3. **Verify `deploy` SSH access** from a second terminal (step 3 above).
+4. **Then** disable password and root SSH login — only after 3 succeeds.
+5. ~~Pin Caddy~~ — done: pinned to `2.11.4` by digest.
+6. **Uptime monitoring** on both `/health` *and* webhook freshness. A healthy
+   server with stale DNS or broken Meta routing fails silently otherwise —
+   which is exactly how the placeholder-classifier gap went unnoticed.
+7. **Rate limiting.** HMAC rejects forged payloads but does nothing about
+   request-volume or bandwidth exhaustion.
