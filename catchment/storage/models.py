@@ -39,6 +39,7 @@ ORIGINS: Final[tuple[str, ...]] = ("llm", "human", "import")
 TAG_STATUSES: Final[tuple[str, ...]] = ("active", "merged", "retired")
 PROPOSAL_KINDS: Final[tuple[str, ...]] = ("merge", "split")
 PROPOSAL_STATUSES: Final[tuple[str, ...]] = ("pending", "approved", "rejected", "applied")
+PIPELINE_STAGES: Final[tuple[str, ...]] = ("extraction", "embedding", "classification")
 
 
 def _in_set(column: str, values: tuple[str, ...]) -> str:
@@ -226,6 +227,40 @@ class ItemTag(Base):
         ),
         CheckConstraint(_in_set("assigned_by", ORIGINS), name="ck_item_tags_assigned_by"),
         Index("ix_item_tags_tag_id", "tag_id"),
+    )
+
+
+class PipelineFailure(Base):
+    """A stage that degraded, recorded where a human can see it.
+
+    Classification failures fall back to the ``unclassified`` tag rather than
+    failing the job, which keeps ingestion resilient but makes the failure
+    invisible: nothing in Postgres distinguishes "no text to classify" from
+    "the classifier errored". RQ's own failed-job registry lives in Redis,
+    which Appsmith cannot read. This table is the dead-letter view.
+
+    ``detail`` holds an exception class name or an HTTP status — never a
+    provider message, which can quote the submitted content.
+    """
+
+    __tablename__ = "pipeline_failures"
+
+    id: Mapped[uuid.UUID] = _pk()
+    item_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("items.id", ondelete="CASCADE"), nullable=False
+    )
+    stage: Mapped[str] = mapped_column(String(32), nullable=False)
+    error_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    detail: Mapped[str | None] = mapped_column(Text)
+    occurred_at: Mapped[datetime] = _created_at()
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    item: Mapped[Item] = relationship()
+
+    __table_args__ = (
+        CheckConstraint(_in_set("stage", PIPELINE_STAGES), name="ck_failures_stage"),
+        Index("ix_failures_open", "resolved_at", "occurred_at"),
+        Index("ix_failures_item_id", "item_id"),
     )
 
 

@@ -24,7 +24,11 @@ from catchment.extraction.passthrough import passthrough
 from catchment.llm.errors import LLMError
 from catchment.logging_config import get_logger, log_context
 from catchment.storage.db import session_scope
-from catchment.storage.repositories import ItemRepository, TagRepository
+from catchment.storage.repositories import (
+    ItemRepository,
+    PipelineFailureRepository,
+    TagRepository,
+)
 
 logger = get_logger(__name__)
 
@@ -48,6 +52,7 @@ def run_pipeline(
     text: str | None,
     embedder: Embedder | None = None,
     classifier: Classifier | None = None,
+    failures: PipelineFailureRepository | None = None,
     settings: Settings | None = None,
 ) -> PipelineResult:
     """Extract source-supplied text, then classify.
@@ -78,6 +83,7 @@ def run_pipeline(
         text=extraction.text if extraction is not None else None,
         embedder=embedder,
         classifier=classifier,
+        failures=failures,
         settings=resolved,
     )
 
@@ -101,6 +107,7 @@ def _classify(
     text: str | None,
     embedder: Embedder | None,
     classifier: Classifier | None,
+    failures: PipelineFailureRepository | None,
     settings: Settings,
 ) -> PipelineResult:
     """Classify an item, degrading to the placeholder rather than losing it.
@@ -133,6 +140,14 @@ def _classify(
             "classification failed; falling back to unclassified",
             extra=log_context(item_id=str(item_id), error=type(error).__name__),
         )
+        if failures is not None:
+            # Makes the degradation visible in the review queue. Without it,
+            # "classifier was down" is indistinguishable from "nothing to tag".
+            failures.record(
+                item_id=item_id,
+                stage="classification",
+                error_type=type(error).__name__,
+            )
         assign_unclassified(tags=tags, item_id=item_id)
         return PipelineResult(
             item_id=item_id, extracted=True, tags_assigned=1, classified=False
@@ -158,6 +173,7 @@ def process_item(item_id: str, text: str | None = None) -> PipelineResult:
         return run_pipeline(
             items=ItemRepository(session),
             tags=TagRepository(session),
+            failures=PipelineFailureRepository(session),
             item_id=identifier,
             text=text,
         )

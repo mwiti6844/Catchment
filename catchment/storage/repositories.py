@@ -27,6 +27,7 @@ from catchment.storage.models import (
     Extraction,
     Item,
     ItemTag,
+    PipelineFailure,
     Tag,
     TagEdge,
     TaxonomyProposal,
@@ -366,6 +367,69 @@ class TagRepository:
             )
         )
         self._session.execute(stmt)
+
+
+# --------------------------------------------------------------------------- #
+# Dead-letter view
+# --------------------------------------------------------------------------- #
+
+
+class PipelineFailureRepository:
+    """Records degraded pipeline stages so a human can see them.
+
+    The pipeline deliberately degrades rather than failing — an item with a
+    classifier outage still lands in the review queue. Without this table that
+    resilience is indistinguishable from success, because nothing in Postgres
+    says why an item is ``unclassified``.
+    """
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def record(
+        self,
+        *,
+        item_id: uuid.UUID,
+        stage: str,
+        error_type: str,
+        detail: str | None = None,
+    ) -> PipelineFailure:
+        """Record one failure.
+
+        ``detail`` must be an exception class, status code, or similar. Never
+        pass a provider message: several quote the submitted content back.
+        """
+        failure = PipelineFailure(
+            item_id=item_id, stage=stage, error_type=error_type, detail=detail
+        )
+        self._session.add(failure)
+        self._session.flush()
+        logger.warning(
+            "pipeline stage failed",
+            extra=log_context(
+                item_id=str(item_id), stage=stage, error_type=error_type
+            ),
+        )
+        return failure
+
+    def list_open(self, *, limit: int = 100) -> list[PipelineFailure]:
+        """Return unresolved failures, oldest first."""
+        stmt = (
+            select(PipelineFailure)
+            .where(PipelineFailure.resolved_at.is_(None))
+            .order_by(PipelineFailure.occurred_at)
+            .limit(limit)
+        )
+        return list(self._session.execute(stmt).scalars())
+
+    def resolve(self, failure_id: uuid.UUID) -> PipelineFailure:
+        """Mark a failure handled, e.g. after a successful re-run."""
+        failure = self._session.get(PipelineFailure, failure_id)
+        if failure is None:
+            raise RepositoryError(f"failure {failure_id} does not exist")
+        failure.resolved_at = _now()
+        self._session.flush()
+        return failure
 
 
 # --------------------------------------------------------------------------- #

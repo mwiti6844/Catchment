@@ -15,6 +15,7 @@ from catchment.storage.models import (
     Base,
     Embedding,
     Item,
+    PipelineFailure,
     TaxonomyProposal,
 )
 
@@ -82,4 +83,21 @@ def test_expected_tables_are_registered() -> None:
         "tag_edges",
         "item_tags",
         "taxonomy_proposals",
+        "pipeline_failures",
     }
+
+
+def test_failures_are_constrained_to_known_stages() -> None:
+    assert "ck_failures_stage" in _check_names(_table(PipelineFailure))
+
+
+def test_open_failures_are_indexed_for_the_review_queue() -> None:
+    """The dead-letter pane filters on resolved_at IS NULL."""
+    names = {index.name for index in _table(PipelineFailure).indexes}
+    assert "ix_failures_open" in names
+
+
+def test_failures_carry_no_content_column() -> None:
+    """`detail` holds an exception class or status, never a provider message."""
+    columns = set(_table(PipelineFailure).c.keys())
+    assert not {"text", "body", "content", "prompt"} & columns
