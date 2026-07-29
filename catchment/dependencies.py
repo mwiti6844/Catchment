@@ -9,7 +9,10 @@ inline queue and a transactional session.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import dataclass
 from typing import Protocol
+
+from sqlalchemy.orm import Session
 
 from catchment.storage.db import session_scope
 from catchment.storage.repositories import ItemRepository, TagRepository
@@ -25,6 +28,30 @@ class TaskQueue(Protocol):
     def enqueue(self, *, item_id: str, text: str | None) -> None:
         """Schedule pipeline work for a newly ingested item."""
         ...
+
+
+@dataclass(frozen=True, slots=True)
+class IngestionUnitOfWork:
+    """An item repository plus the ability to commit it.
+
+    Handlers need to commit *before* enqueueing: a worker that picks up a job
+    while the inserting transaction is still open fails to find the row.
+    Relying on dependency teardown to commit puts the write after the enqueue,
+    which is a race that only shows up under load. Exposing ``commit`` makes
+    the ordering explicit at the call site instead.
+    """
+
+    items: ItemRepository
+    session: Session
+
+    def commit(self) -> None:
+        self.session.commit()
+
+
+def get_ingestion_unit_of_work() -> Iterator[IngestionUnitOfWork]:
+    """Yield a unit of work bound to a request-scoped transaction."""
+    with session_scope() as session:
+        yield IngestionUnitOfWork(items=ItemRepository(session), session=session)
 
 
 def get_item_repository() -> Iterator[ItemRepository]:

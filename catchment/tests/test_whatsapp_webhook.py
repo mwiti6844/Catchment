@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
 from catchment.api import create_app
-from catchment.dependencies import get_item_repository, get_task_queue
+from catchment.dependencies import get_ingestion_unit_of_work, get_task_queue
 from catchment.ingestion.whatsapp import SIGNATURE_HEADER, parse_webhook, verify_signature
 
 APP_SECRET = "test-app-secret"
@@ -98,11 +98,30 @@ class FakeItemRepository:
 
 
 class FakeQueue:
-    def __init__(self) -> None:
+    def __init__(self, events: list[str] | None = None) -> None:
         self.jobs: list[tuple[str, str | None]] = []
+        self.events = events if events is not None else []
 
     def enqueue(self, *, item_id: str, text: str | None) -> None:
         self.jobs.append((item_id, text))
+        self.events.append("enqueue")
+
+
+class FakeUnitOfWork:
+    """Stands in for the real unit of work, recording when it commits."""
+
+    def __init__(self, items: FakeItemRepository, events: list[str]) -> None:
+        self.items = items
+        self.events = events
+
+    def commit(self) -> None:
+        self.events.append("commit")
+
+
+@pytest.fixture
+def events() -> list[str]:
+    """Shared ordering log so tests can assert commit precedes enqueue."""
+    return []
 
 
 @pytest.fixture
@@ -111,14 +130,18 @@ def repo() -> FakeItemRepository:
 
 
 @pytest.fixture
-def queue() -> FakeQueue:
-    return FakeQueue()
+def queue(events: list[str]) -> FakeQueue:
+    return FakeQueue(events)
 
 
 @pytest.fixture
-def client(repo: FakeItemRepository, queue: FakeQueue) -> Iterator[TestClient]:
+def client(
+    repo: FakeItemRepository, queue: FakeQueue, events: list[str]
+) -> Iterator[TestClient]:
     app = create_app()
-    app.dependency_overrides[get_item_repository] = lambda: repo
+    app.dependency_overrides[get_ingestion_unit_of_work] = lambda: FakeUnitOfWork(
+        repo, events
+    )
     app.dependency_overrides[get_task_queue] = lambda: queue
     yield TestClient(app)
     app.dependency_overrides.clear()
@@ -357,6 +380,19 @@ def test_retried_delivery_does_not_requeue_work(
     assert second.json()["queued"] == 0
     assert second.json()["accepted"] == 1
     assert len(queue.jobs) == 1
+
+
+def test_work_is_committed_before_it_is_enqueued(
+    client: TestClient, events: list[str]
+) -> None:
+    """A worker claiming the job while the insert is uncommitted finds no row.
+
+    Ordering here is the whole fix — relying on dependency teardown to commit
+    put the write *after* the enqueue, which races under load.
+    """
+    post(client, envelope(text_message(message_id="wamid.A"), text_message(message_id="wamid.B")))
+
+    assert events == ["commit", "enqueue", "enqueue"]
 
 
 def test_webhook_logs_no_message_content(

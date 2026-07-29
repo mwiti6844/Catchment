@@ -22,10 +22,14 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, SecretStr
 
 from catchment.config import Settings, get_settings
-from catchment.dependencies import TaskQueue, get_item_repository, get_task_queue
+from catchment.dependencies import (
+    IngestionUnitOfWork,
+    TaskQueue,
+    get_ingestion_unit_of_work,
+    get_task_queue,
+)
 from catchment.ingestion.base import RawRecord
 from catchment.logging_config import get_logger, log_context
-from catchment.storage.repositories import ItemRepository
 
 logger = get_logger(__name__)
 
@@ -228,7 +232,7 @@ def verify_subscription(
 @router.post("/whatsapp", response_model=WebhookAck)
 async def receive_webhook(
     request: Request,
-    repository: ItemRepository = Depends(get_item_repository),
+    work: IngestionUnitOfWork = Depends(get_ingestion_unit_of_work),
     queue: TaskQueue = Depends(get_task_queue),
     settings: Settings = Depends(get_settings),
 ) -> WebhookAck:
@@ -252,11 +256,11 @@ async def receive_webhook(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="payload must be an object")
 
     messages, skipped = parse_webhook(payload)
-    queued = 0
+    pending: list[tuple[str, str | None]] = []
 
     for parsed in messages:
         record = parsed.record
-        item, created = repository.upsert(
+        item, created = work.items.upsert(
             source=record.source,
             source_id=record.source_id,
             kind=record.kind,
@@ -270,8 +274,15 @@ async def receive_webhook(
         # Only new items get work enqueued; a Meta retry of an already-ingested
         # message costs one insert that does nothing.
         if created:
-            queue.enqueue(item_id=str(item.id), text=parsed.text)
-            queued += 1
+            pending.append((str(item.id), parsed.text))
+
+    # Commit before enqueuing. A worker that claims the job while this
+    # transaction is still open would not find the row it was handed.
+    work.commit()
+
+    for item_id, text in pending:
+        queue.enqueue(item_id=item_id, text=text)
+    queued = len(pending)
 
     ack = WebhookAck(
         status="accepted",

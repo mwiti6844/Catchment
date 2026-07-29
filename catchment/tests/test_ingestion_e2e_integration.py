@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 
 from catchment.api import create_app
 from catchment.classification.placeholder import UNCLASSIFIED_SLUG
-from catchment.dependencies import get_item_repository, get_task_queue
+from catchment.dependencies import IngestionUnitOfWork, get_ingestion_unit_of_work, get_task_queue
 from catchment.extraction.passthrough import PASSTHROUGH_EXTRACTOR
 from catchment.ingestion.whatsapp import SIGNATURE_HEADER
 from catchment.jobs.pipeline import run_pipeline
@@ -64,7 +64,9 @@ def queue(db_session: Session) -> InlineQueue:
 @pytest.fixture
 def client(db_session: Session, queue: InlineQueue) -> Iterator[TestClient]:
     app = create_app()
-    app.dependency_overrides[get_item_repository] = lambda: ItemRepository(db_session)
+    app.dependency_overrides[get_ingestion_unit_of_work] = lambda: IngestionUnitOfWork(
+        items=ItemRepository(db_session), session=db_session
+    )
     app.dependency_overrides[get_task_queue] = lambda: queue
     yield TestClient(app)
     app.dependency_overrides.clear()
