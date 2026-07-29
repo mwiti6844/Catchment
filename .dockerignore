@@ -1,0 +1,41 @@
+# Secrets must never enter the build context, let alone an image layer.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+/secrets
+
+# VCS and CI
+.git
+.github
+.gitignore
+
+# Local environments and caches
+.venv
+venv
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# Not needed at runtime. Tests live inside the package, so they are excluded
+# explicitly — fixtures include sample correspondence and have no business in
+# a deployable image.
+catchment/tests
+docs
+tools
+*.md
+.pre-commit-config.yaml
+
+# Local model weights and scratch media
+models/
+media/
+.DS_Store

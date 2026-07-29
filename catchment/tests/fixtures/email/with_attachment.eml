@@ -1,0 +1,18 @@
+Message-ID: <attach-003@example.com>
+Date: Thu, 17 Jul 2025 11:00:00 +0300
+From: reports@example.org
+Subject: Quarterly report
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="BOUNDARY42"
+
+--BOUNDARY42
+Content-Type: text/plain; charset=utf-8
+
+Report attached.
+--BOUNDARY42
+Content-Type: application/pdf
+Content-Disposition: attachment; filename="q3.pdf"
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQK
+--BOUNDARY42--

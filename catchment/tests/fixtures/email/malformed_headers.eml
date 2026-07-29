@@ -1,0 +1,6 @@
+Message-ID: <malformed-005@example.com>
+Date: not-a-real-date
+From: broken@example.com
+Subject: =?x-unknown-charset?B?aGVsbG8=?=
+
+Body.

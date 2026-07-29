@@ -1,0 +1,32 @@
+{
+  "_comment": "A representative classifier pass over one Substack article. Covers an existing tag, a newly coined tag, a below-threshold suggestion, and a label needing normalisation.",
+  "model": "claude-sonnet-5",
+  "trace_id": "lf-trace-0001",
+  "suggestions": [
+    {
+      "label": "LLM Evaluation",
+      "confidence": 0.92,
+      "is_new": false,
+      "expected_slug": "llm-evaluation"
+    },
+    {
+      "label": "Kenyan Fintech",
+      "confidence": 0.71,
+      "is_new": true,
+      "description": "Payments and lending products built for the Kenyan market.",
+      "expected_slug": "kenyan-fintech"
+    },
+    {
+      "label": "Café Culture",
+      "confidence": 0.35,
+      "is_new": true,
+      "expected_slug": "cafe-culture"
+    },
+    {
+      "label": "  Retrieval  Augmented Generation ",
+      "confidence": 0.55,
+      "is_new": false,
+      "expected_slug": "retrieval-augmented-generation"
+    }
+  ]
+}

@@ -1,0 +1,121 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# A newer push to the same ref supersedes an in-flight run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Lint, migrate, test (Python 3.12)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      # pgvector image, not stock `postgres`: the schema declares a `vector`
+      # column and the initial migration runs CREATE EXTENSION vector.
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          # Throwaway credentials for an ephemeral service container that is
+          # only reachable from this job. Not a secret.
+          POSTGRES_USER: catchment
+          POSTGRES_PASSWORD: catchment
+          POSTGRES_DB: catchment_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U catchment -d catchment_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+          --health-start-period 10s
+
+    env:
+      # Driver is psycopg v3 everywhere (see pyproject dependencies).
+      #
+      # Two databases on purpose:
+      #   catchment_test       — owned by the pytest `db_engine` fixture, which
+      #                          drop_all/create_all's the schema.
+      #   catchment_migrations — owned by `alembic upgrade head`.
+      # Keeping them apart means the fixture's drop_all cannot race or clobber
+      # the migration check (which also runs first, belt and braces).
+      TEST_DATABASE_URL: postgresql+psycopg://catchment:catchment@localhost:5432/catchment_test
+      MIGRATION_DATABASE_URL: postgresql+psycopg://catchment:catchment@localhost:5432/catchment_migrations
+      # Required by catchment/config.py Settings, but nothing in CI connects to it.
+      REDIS_URL: redis://localhost:6379/0
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          # Caches the pip download/wheel dir; keyed on the dependency manifest.
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install package and dev dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+
+      - name: Lint (ruff)
+        run: ruff check catchment tools
+
+      - name: Type check (mypy)
+        run: mypy catchment tools
+
+      - name: Lint log calls (no f-strings in logging)
+        run: python tools/check_log_fstrings.py catchment
+
+      - name: Create the migration database
+        # psycopg v3 ships as a package dependency, so no extra client tooling
+        # (psql/createdb) is assumed to exist on the runner.
+        run: |
+          python - <<'PY'
+          import psycopg
+
+          dsn = "postgresql://catchment:catchment@localhost:5432/postgres"
+          with psycopg.connect(dsn, autocommit=True) as conn:
+              conn.execute("DROP DATABASE IF EXISTS catchment_migrations")
+              conn.execute("CREATE DATABASE catchment_migrations")
+          PY
+
+      - name: Verify Alembic migrations apply cleanly
+        # alembic.ini ships an empty sqlalchemy.url; migrations/env.py reads the
+        # URL from catchment/config.py, so both required settings must be present.
+        env:
+          CATCHMENT_DATABASE_URL: ${{ env.MIGRATION_DATABASE_URL }}
+          CATCHMENT_REDIS_URL: ${{ env.REDIS_URL }}
+          CATCHMENT_ENV: test
+        run: alembic upgrade head
+
+      - name: Run tests (including integration) with coverage
+        env:
+          # Read at conftest import time. Together these turn "no database
+          # configured" from a silent skip into a hard failure, so CI can never
+          # stop exercising the integration suite without anyone noticing.
+          CATCHMENT_TEST_DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+          CATCHMENT_REQUIRE_INTEGRATION: "1"
+          # Baseline settings. The autouse conftest fixture strips every
+          # CATCHMENT_* var per test and substitutes its own, so these only
+          # matter for any collection-time import that builds Settings.
+          CATCHMENT_DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+          CATCHMENT_REDIS_URL: ${{ env.REDIS_URL }}
+          CATCHMENT_ENV: test
+          CATCHMENT_LOG_LEVEL: DEBUG
+        run: |
+          pytest \
+            --cov=catchment \
+            --cov-report=term-missing \
+            --cov-fail-under=80

@@ -1,0 +1,54 @@
+# Install once:  pre-commit install
+# Run manually:  pre-commit run --all-files
+#
+# Versions track the floors in pyproject.toml's `dev` extra so a hook and a
+# local `pip install -e '.[dev]'` cannot disagree about what passes.
+default_language_version:
+  python: python3.12
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-added-large-files
+      - id: check-merge-conflict
+      - id: check-toml
+      - id: check-yaml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      # A committed .env is the failure mode CLAUDE.md calls out by name.
+      - id: detect-private-key
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.0
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+        stages: [manual]
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v2.3.0
+    hooks:
+      - id: mypy
+        files: ^(catchment|tools)/
+        # mypy needs the real dependency types, not an empty hook venv.
+        additional_dependencies:
+          - pydantic>=2.9
+          - pydantic-settings>=2.6
+          - sqlalchemy>=2.0.36
+          - fastapi>=0.115
+          - types-redis>=4.6
+
+  - repo: local
+    hooks:
+      # The gap RedactionFilter cannot close: personal content interpolated
+      # into a log message string rather than passed via extra=.
+      - id: check-log-fstrings
+        name: LOG001 - no content interpolated into log messages
+        entry: python tools/check_log_fstrings.py
+        language: system
+        types: [python]
+        files: ^catchment/
+        pass_filenames: false
+        args: [catchment]

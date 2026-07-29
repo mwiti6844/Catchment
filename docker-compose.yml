@@ -1,0 +1,83 @@
+name: catchment
+
+# Secrets come from .env at run time and are never baked into the image, which
+# is the same discipline config.py's SecretStr enforces in the process.
+# Service-to-service URLs are set here because they differ from local dev:
+# `postgres`/`redis` resolve on the compose network, `localhost` does not.
+x-service-env: &service-env
+  CATCHMENT_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-catchment}:${POSTGRES_PASSWORD:-catchment}@postgres:5432/${POSTGRES_DB:-catchment}
+  CATCHMENT_REDIS_URL: redis://redis:6379/0
+
+x-app: &app
+  build:
+    context: .
+  image: catchment:dev
+  env_file:
+    - path: .env
+      required: false
+  environment: *service-env
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+    redis:
+      condition: service_healthy
+
+services:
+  postgres:
+    # pgvector, not stock postgres: migration 0001 runs CREATE EXTENSION vector.
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-catchment}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-catchment}
+      POSTGRES_DB: ${POSTGRES_DB:-catchment}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-catchment} -d ${POSTGRES_DB:-catchment}"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  # Runs to completion before api and worker start, so neither ever talks to an
+  # un-migrated schema.
+  migrate:
+    <<: *app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+
+  api:
+    <<: *app
+    ports:
+      - "${API_PORT:-8000}:8000"
+    restart: unless-stopped
+
+  worker:
+    <<: *app
+    command: ["catchment-worker"]
+    restart: unless-stopped
+    # The image's HEALTHCHECK probes /health; the worker has no HTTP surface.
+    healthcheck:
+      disable: true
+
+volumes:
+  pgdata:
+  redisdata:
