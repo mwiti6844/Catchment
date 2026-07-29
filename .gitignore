@@ -30,3 +30,7 @@ htmlcov/
 
 # Machine-local Claude Code permission state
 .claude/settings.local.json
+
+# Hosting linkage from the abandoned OpenAI Sites attempt. The privacy site is
+# published from the gh-pages branch instead.
+.openai/

@@ -129,6 +129,16 @@ def test_configure_logging_installs_the_filter() -> None:
     assert any(isinstance(f, RedactionFilter) for f in handler.filters)
 
 
+def test_configure_logging_disables_uvicorn_access_log_query_strings() -> None:
+    """Handshake verify tokens live in URLs that Uvicorn otherwise logs raw."""
+    access_logger = logging.getLogger("uvicorn.access")
+    access_logger.disabled = False
+
+    configure_logging()
+
+    assert access_logger.disabled is True
+
+
 def test_log_context_renames_reserved_record_attributes() -> None:
     context = log_context(created=1, name="connector", item_id="i-1")
 

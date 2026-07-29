@@ -2,7 +2,9 @@
 
 Redaction is enforced by a :class:`logging.Filter` rather than by convention,
 so a careless ``logger.info("...", extra={"body": ...})`` still cannot emit
-personal content.
+personal content. Uvicorn's raw access logger is disabled separately because
+it renders the full request target, including secret-bearing query strings,
+before our structured-field filter can inspect it.
 """
 
 from __future__ import annotations
@@ -63,9 +65,19 @@ class ContextFormatter(logging.Formatter):
 
 
 def configure_logging(settings: Settings | None = None) -> None:
-    """Install the redacting handler on the root logger. Idempotent."""
+    """Install safe process-wide logging. Idempotent.
+
+    Uvicorn access records store the complete URL in positional ``args`` rather
+    than structured ``extra`` fields. A webhook subscription handshake carries
+    its verify token in that URL, so the normal redaction filter cannot safely
+    repair the record. Application logs already record the useful outcome and
+    metadata; disabling the raw access logger closes the leak without losing
+    ingestion observability.
+    """
     resolved = settings or get_settings()
     allow_content_at_debug = not resolved.is_production
+
+    logging.getLogger("uvicorn.access").disabled = True
 
     handler = logging.StreamHandler()
     handler.setFormatter(ContextFormatter(_LOG_FORMAT))
