@@ -74,6 +74,11 @@ class Settings(BaseSettings):
     #: How many similar items to inspect for candidate tags. Too few and the
     #: classifier coins duplicates it could have reused.
     classification_neighbours: int = Field(default=8, ge=1, le=100)
+    #: How many *genuinely new* tags one item may coin. Prompt wording alone
+    #: cannot stop injected content steering the classifier, but this bounds
+    #: what a successful injection can do: pollute the graph with a couple of
+    #: junk tags a human then sees in review, rather than flood it.
+    max_new_tags_per_item: int = Field(default=2, ge=0, le=8)
 
     # --- Langfuse (self-hosted) ---
     langfuse_host: str = "http://localhost:3000"

@@ -57,6 +57,9 @@ class FakeTags:
     def labels_for_items(self, item_ids: Any) -> list[str]:
         return []
 
+    def existing_slugs(self, slugs: Any) -> set[str]:
+        return set()
+
 
 class FakeEmbedder:
     """Returns a well-formed vector, or raises to exercise the fallback."""

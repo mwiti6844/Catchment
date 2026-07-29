@@ -330,6 +330,19 @@ class TagRepository:
         )
         return list(self._session.execute(stmt).scalars())
 
+    def existing_slugs(self, slugs: Sequence[str]) -> set[str]:
+        """Return which of ``slugs`` already exist, regardless of status.
+
+        The classifier's candidate list only carries tags from *nearby* items,
+        so a suggestion absent from it is not necessarily new to the graph.
+        Deciding novelty from the candidate list alone would block legitimate
+        reuse of a tag that exists but happens to sit far away.
+        """
+        if not slugs:
+            return set()
+        stmt = select(Tag.slug).where(Tag.slug.in_(list(slugs)))
+        return set(self._session.execute(stmt).scalars())
+
     def assign(
         self,
         *,

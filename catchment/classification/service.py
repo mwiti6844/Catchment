@@ -33,6 +33,8 @@ class ClassificationOutcome:
     coined: int
     model: str
     trace_id: str | None = None
+    #: New tags dropped because the item hit its coinage cap.
+    capped: int = 0
 
     @property
     def discarded(self) -> int:
@@ -65,7 +67,8 @@ def classify_item(
 
     candidates = _candidate_tags(items, tags, vector=vector, item_id=item_id, settings=resolved)
     result = classifier.classify(text, known_tags=candidates)
-    kept = result.above(resolved.classification_threshold)
+    above_threshold = result.above(resolved.classification_threshold)
+    kept, capped = _cap_new_tags(tags, above_threshold, limit=resolved.max_new_tags_per_item)
 
     coined = _apply(tags, item_id=item_id, suggestions=kept)
 
@@ -77,6 +80,7 @@ def classify_item(
         coined=coined,
         model=result.model,
         trace_id=result.trace_id,
+        capped=capped,
     )
     logger.info(
         "classification complete",
@@ -87,6 +91,7 @@ def classify_item(
             assigned=outcome.assigned,
             coined=outcome.coined,
             discarded=outcome.discarded,
+            capped=outcome.capped,
             trace_id=outcome.trace_id,
         ),
     )
@@ -113,6 +118,36 @@ def _candidate_tags(
         vector=vector, limit=settings.classification_neighbours, exclude=item_id
     )
     return tags.labels_for_items([item.id for item, _distance in neighbours])
+
+
+def _cap_new_tags(
+    tags: TagRepository, suggestions: list[TagSuggestion], *, limit: int
+) -> tuple[list[TagSuggestion], int]:
+    """Bound how many genuinely new tags one item may coin.
+
+    Prompt wording alone cannot stop injected content steering the classifier —
+    ingested messages are written by other people. This bounds what a successful
+    injection achieves: a couple of junk tags a human sees in review, not a
+    flooded taxonomy.
+
+    Novelty is decided against the *database*, not the candidate list: the
+    candidates only cover nearby items, so a tag absent from them may still
+    exist elsewhere in the graph. Capping on the candidate list would block
+    legitimate reuse.
+    """
+    existing = tags.existing_slugs([s.slug for s in suggestions])
+
+    kept: list[TagSuggestion] = []
+    coined = 0
+    capped = 0
+    for suggestion in suggestions:
+        if suggestion.slug not in existing:
+            if coined >= limit:
+                capped += 1
+                continue
+            coined += 1
+        kept.append(suggestion)
+    return kept, capped
 
 
 def _apply(
