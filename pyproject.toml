@@ -20,6 +20,7 @@ dependencies = [
     "redis>=5.2",
     "httpx>=0.28",
     "langfuse>=2.53",
+    "groq>=1.6",
 ]
 
 [project.scripts]

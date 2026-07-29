@@ -45,6 +45,22 @@ class Settings(BaseSettings):
     # --- Tag graph ---
     max_tag_depth: int = Field(default=8, ge=1, le=TAG_DEPTH_HARD_CEILING)
 
+    # --- Embeddings service ---
+    # BGE-M3 runs in its own container; the worker talks to it over HTTP so the
+    # worker image does not carry ~3GB of torch wheels it uses once per item.
+    embedder_url: str = "http://localhost:8001"
+    embedder_timeout_seconds: int = Field(default=120, ge=1)
+
+    # --- LLM router ---
+    # Which registered provider the classifier uses. Swappable: see
+    # catchment/llm/registry.py. Tracing is applied by the router, not the
+    # provider, so it survives a provider change.
+    llm_provider: str = "groq"
+    llm_model: str = "llama-3.3-70b-versatile"
+    llm_max_tokens: int = Field(default=2048, ge=1)
+    llm_timeout_seconds: int = Field(default=60, ge=1)
+    groq_api_key: SecretStr | None = None
+
     # --- Langfuse (self-hosted) ---
     langfuse_host: str = "http://localhost:3000"
     langfuse_public_key: SecretStr | None = None
@@ -86,6 +102,14 @@ class Settings(BaseSettings):
                 "CATCHMENT_LANGFUSE_SECRET_KEY"
             )
         return self.langfuse_public_key, self.langfuse_secret_key
+
+    def require_groq_key(self) -> SecretStr:
+        """Return the Groq API key, raising if the provider is unconfigured."""
+        if self.groq_api_key is None:
+            raise MissingConfiguration(
+                "The groq LLM provider requires CATCHMENT_GROQ_API_KEY"
+            )
+        return self.groq_api_key
 
     def require_whatsapp_secret(self) -> SecretStr:
         """Return the app secret, raising if webhook verification is unconfigured.
