@@ -133,6 +133,31 @@ Deliberately still placeholders — these are *not* the real implementations:
   `origin='import'` rather than `'llm'`, so a degraded classification is
   distinguishable from a model decision when reviewing the graph.
 
+## Tracing (Langfuse)
+
+Self-hosted, Postgres-only (`langfuse/langfuse:2` — v3 additionally needs
+ClickHouse, MinIO and its own Redis). The org, project, API keys and UI login
+are provisioned **headlessly on first boot** from `.env`, so `docker compose up`
+yields a working tracing stack rather than a UI you have to click through.
+
+```bash
+# generate a key pair, put both in .env, then bring the stack up
+python -c "import uuid;print(f'pk-lf-{uuid.uuid4()}');print(f'sk-lf-{uuid.uuid4()}')"
+docker compose up -d          # UI at http://localhost:3000
+```
+
+`docker-compose.yml` feeds the *same* `.env` values to the server as
+`LANGFUSE_INIT_PROJECT_*`, so the app's keys and the server's cannot drift.
+That drift is worth guarding against: ingestion is fire-and-forget, so a
+mismatch returns 401 on a background thread and every trace is dropped while
+calls still look successful. Two things make it visible now — `auth_check()`
+runs once at client construction and logs an error naming the host, and the SDK
+is pinned to `<3` to match the v2 server (the v3+ SDK posts OTLP to an endpoint
+a v2 server does not expose, and `auth_check()` passes anyway).
+
+**Langfuse Cloud keys will not work against the self-hosted instance.** That is
+the most likely cause of an auth error at startup.
+
 ## Checks
 
 ```bash

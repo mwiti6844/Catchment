@@ -89,6 +89,20 @@ services:
       SALT: ${LANGFUSE_SALT:-local-dev-salt}
       ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:-0000000000000000000000000000000000000000000000000000000000000000}
       TELEMETRY_ENABLED: "false"
+      # Headless initialisation: creates the org, project, API keys and login
+      # user on first boot, so `docker compose up` yields a working tracing
+      # stack instead of a UI you must click through. The project keys are
+      # taken from the same .env values the app reads, so the two cannot drift
+      # — a mismatch there is what silently drops every trace.
+      LANGFUSE_INIT_ORG_ID: catchment
+      LANGFUSE_INIT_ORG_NAME: Catchment
+      LANGFUSE_INIT_PROJECT_ID: catchment
+      LANGFUSE_INIT_PROJECT_NAME: Catchment
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${CATCHMENT_LANGFUSE_PUBLIC_KEY:?set CATCHMENT_LANGFUSE_PUBLIC_KEY in .env}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${CATCHMENT_LANGFUSE_SECRET_KEY:?set CATCHMENT_LANGFUSE_SECRET_KEY in .env}
+      LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL:?set LANGFUSE_INIT_USER_EMAIL in .env}
+      LANGFUSE_INIT_USER_NAME: ${LANGFUSE_INIT_USER_NAME:-Catchment}
+      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:?set LANGFUSE_INIT_USER_PASSWORD in .env}
     ports:
       - "${LANGFUSE_PORT:-3000}:3000"
     depends_on:
