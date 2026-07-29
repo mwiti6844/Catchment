@@ -127,6 +127,45 @@ services:
         condition: service_healthy
     restart: "no"
 
+  # Provisions the restricted `appsmith` Postgres role. Idempotent, so it runs
+  # on every start and converges on the privilege set in
+  # catchment/admin/README.md rather than living in someone's shell history.
+  appsmith-db-role:
+    image: pgvector/pgvector:pg16
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:-catchment}
+      APPSMITH_DB_PASSWORD: ${CATCHMENT_APPSMITH_DB_PASSWORD:?set CATCHMENT_APPSMITH_DB_PASSWORD in .env}
+    volumes:
+      - ./catchment/admin/queries/00_appsmith_role.sql:/role.sql:ro
+    entrypoint:
+      - sh
+      - -c
+      - |
+        until pg_isready -h postgres -U ${POSTGRES_USER:-catchment}; do sleep 1; done
+        psql -h postgres -U ${POSTGRES_USER:-catchment} -d ${POSTGRES_DB:-catchment} \
+          -v ON_ERROR_STOP=1 \
+          -v appsmith_password="$$APPSMITH_DB_PASSWORD" \
+          -f /role.sql
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # Admin dashboard. Renders real WhatsApp and email content, so it is bound to
+  # loopback ONLY — never 0.0.0.0, never a Caddy route, never a tunnel hostname.
+  # The webhook API is deliberately public; this is deliberately not. On the VPS
+  # it is reached through an SSH tunnel (see README).
+  appsmith:
+    image: appsmith/appsmith-ce:latest
+    ports:
+      - "127.0.0.1:${APPSMITH_PORT:-8080}:80"
+    volumes:
+      - appsmith_stacks:/appsmith-stacks
+    depends_on:
+      appsmith-db-role:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
   api:
     <<: *app
     ports:
@@ -144,5 +183,6 @@ services:
 volumes:
   pgdata:
   redisdata:
+  appsmith_stacks:
   # BGE-M3 weights (~2GB). Survives image rebuilds so they download once.
   models:

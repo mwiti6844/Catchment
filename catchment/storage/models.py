@@ -216,6 +216,11 @@ class ItemTag(Base):
     )
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
     assigned_by: Mapped[str] = mapped_column(String(16), nullable=False, default="llm")
+    #: Langfuse trace that produced this assignment. Null for rule-based
+    #: assignments (the `unclassified` fallback), which have no model call to
+    #: trace. Stored per assignment rather than per item so a re-classification
+    #: does not orphan the provenance of the tags it replaced.
+    trace_id: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = _created_at()
 
     item: Mapped[Item] = relationship(back_populates="tag_links")

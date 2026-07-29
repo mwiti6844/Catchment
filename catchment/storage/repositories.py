@@ -351,6 +351,7 @@ class TagRepository:
         tag_id: uuid.UUID,
         confidence: float,
         assigned_by: str = "llm",
+        trace_id: str | None = None,
     ) -> None:
         """Attach a tag to an item, updating confidence if already attached."""
         stmt = (
@@ -360,10 +361,15 @@ class TagRepository:
                 tag_id=tag_id,
                 confidence=confidence,
                 assigned_by=assigned_by,
+                trace_id=trace_id,
             )
             .on_conflict_do_update(
                 index_elements=[ItemTag.item_id, ItemTag.tag_id],
-                set_={"confidence": confidence, "assigned_by": assigned_by},
+                set_={
+                    "confidence": confidence,
+                    "assigned_by": assigned_by,
+                    "trace_id": trace_id,
+                },
             )
         )
         self._session.execute(stmt)

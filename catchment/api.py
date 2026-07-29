@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from catchment.classification.embeddings import close_embedder
 from catchment.config import Settings, get_settings
 from catchment.ingestion import whatsapp
+from catchment.internal_api import router as internal_router
 from catchment.jobs.queue import close_pipeline_queue
 from catchment.llm.tracing import flush_langfuse
 from catchment.logging_config import configure_logging, get_logger, log_context
@@ -66,6 +67,8 @@ def create_app() -> FastAPI:
         )
 
     app.include_router(whatsapp.router)
+    # Token-gated; Caddy also refuses /internal/* from outside.
+    app.include_router(internal_router)
     return app
 
 

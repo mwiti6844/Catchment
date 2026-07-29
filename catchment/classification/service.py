@@ -70,7 +70,9 @@ def classify_item(
     above_threshold = result.above(resolved.classification_threshold)
     kept, capped = _cap_new_tags(tags, above_threshold, limit=resolved.max_new_tags_per_item)
 
-    coined = _apply(tags, item_id=item_id, suggestions=kept)
+    coined = _apply(
+        tags, item_id=item_id, suggestions=kept, trace_id=result.trace_id
+    )
 
     outcome = ClassificationOutcome(
         item_id=item_id,
@@ -151,7 +153,11 @@ def _cap_new_tags(
 
 
 def _apply(
-    tags: TagRepository, *, item_id: uuid.UUID, suggestions: list[TagSuggestion]
+    tags: TagRepository,
+    *,
+    item_id: uuid.UUID,
+    suggestions: list[TagSuggestion],
+    trace_id: str | None = None,
 ) -> int:
     """Create or reuse each tag and attach it. Returns how many were coined."""
     coined = 0
@@ -168,5 +174,6 @@ def _apply(
             tag_id=tag.id,
             confidence=suggestion.confidence,
             assigned_by="llm",
+            trace_id=trace_id,
         )
     return coined

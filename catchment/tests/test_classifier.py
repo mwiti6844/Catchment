@@ -465,3 +465,22 @@ def test_cap_never_blocks_reuse_of_an_existing_tag(
     assert outcome.assigned == 1, "the existing tag must still be reused"
     assert outcome.capped == 1
     assert tags.assignments[0]["confidence"] == 0.9
+
+
+def test_assignments_record_the_langfuse_trace() -> None:
+    """The dashboard links a tag back to the call that produced it."""
+    tags = FakeTags()
+
+    run(tags=tags)
+
+    assert tags.assignments[0]["trace_id"] == "trace-x"
+
+
+def test_placeholder_assignments_have_no_trace() -> None:
+    """A rule-based fallback has no model call, so nothing to link to."""
+    from catchment.classification.placeholder import assign_unclassified
+
+    tags = FakeTags()
+    assign_unclassified(tags=tags, item_id=uuid.uuid4())  # type: ignore[arg-type]
+
+    assert tags.assignments[0].get("trace_id") is None

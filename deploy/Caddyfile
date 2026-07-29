@@ -11,6 +11,13 @@
 	# api listens on 8000 *inside* the compose network. The 8010 seen in local
 	# dev is only a host-side port used to avoid a clash with another service
 	# on the workstation; it does not exist in the container.
+	# The admin dashboard's routes must never be reachable from the internet.
+	# They are token-gated in the application too — this is defence in depth,
+	# not the only control. Appsmith reaches the API directly over the compose
+	# network, so it never traverses this proxy.
+	@internal path /internal/*
+	respond @internal 404
+
 	reverse_proxy api:8000
 
 	# Meta signs webhooks over the raw request body, so nothing may alter it in

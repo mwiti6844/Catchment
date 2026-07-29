@@ -88,6 +88,16 @@ class Settings(BaseSettings):
     #: junk tags a human then sees in review, rather than flood it.
     max_new_tags_per_item: int = Field(default=2, ge=0, le=8)
 
+    # --- Admin dashboard (Appsmith) ---
+    #: Password for the restricted `appsmith` Postgres role. Provisioned by the
+    #: appsmith-db-role compose service; Appsmith never uses the app's own
+    #: write-capable credentials.
+    appsmith_db_password: SecretStr | None = None
+    #: Shared secret for /internal/* routes. The API is publicly proxied in
+    #: production, so these must authenticate — an open approval endpoint would
+    #: mean anyone on the internet is "a human" for the review gate.
+    internal_api_token: SecretStr | None = None
+
     # --- Langfuse (self-hosted) ---
     # Also accepts Langfuse's own variable names. Their docs and dashboard tell
     # you to set LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY / LANGFUSE_BASE_URL,
@@ -171,6 +181,18 @@ class Settings(BaseSettings):
                 "CATCHMENT_LANGFUSE_SECRET_KEY"
             )
         return self.langfuse_public_key, self.langfuse_secret_key
+
+    def require_internal_token(self) -> SecretStr:
+        """Return the internal API token, raising if unset.
+
+        Fails closed: an unset token disables /internal/* entirely rather than
+        leaving it unauthenticated on a publicly proxied API.
+        """
+        if self.internal_api_token is None:
+            raise MissingConfiguration(
+                "Internal admin routes require CATCHMENT_INTERNAL_API_TOKEN"
+            )
+        return self.internal_api_token
 
     def require_groq_key(self) -> SecretStr:
         """Return the Groq API key, raising if the provider is unconfigured."""

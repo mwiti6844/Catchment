@@ -157,6 +157,34 @@ Both `--env-file` flags matter too: they control Compose-time `${...}`
 interpolation, so dropping one lets `${VAR:-default}` variables silently fall
 back to defaults that may disagree with `.env`.
 
+## Admin dashboard (Appsmith)
+
+Six pages — Inbox, Item detail, Tags, Failures, Review, Queue — reading
+Postgres directly, plus two authenticated REST routes for the things SQL cannot
+do (see `catchment/admin/`).
+
+```bash
+docker compose up -d appsmith        # http://localhost:8080
+```
+
+**It is bound to `127.0.0.1` only, in local *and* production.** It renders real
+WhatsApp and email content, so unlike the webhook API it is never public: no
+Caddy route, no tunnel hostname, no `0.0.0.0` binding. On the VPS, reach it
+through an SSH tunnel:
+
+```bash
+ssh -L 8080:127.0.0.1:8080 deploy@<vps-ip>   # then open localhost:8080
+```
+
+Appsmith connects as a **restricted `appsmith` Postgres role** — `SELECT`
+everywhere, `UPDATE` on only the decision columns of `taxonomy_proposals` and
+`resolved_at` on `pipeline_failures`, `INSERT`/`DELETE` nowhere. The role is
+provisioned idempotently by the `appsmith-db-role` service on every start, so
+it lives in the repository rather than in someone's shell history.
+
+First-time setup and the page-by-page build spec:
+**[catchment/admin/appsmith-export/README.md](catchment/admin/appsmith-export/README.md)**.
+
 ## Tracing (Langfuse)
 
 Self-hosted, Postgres-only (`langfuse/langfuse:2` — v3 additionally needs
