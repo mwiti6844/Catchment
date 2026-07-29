@@ -24,6 +24,7 @@ dependencies = [
 
 [project.scripts]
 catchment-worker = "catchment.worker:main"
+catchment-poll-email = "catchment.jobs.polling:main"
 
 [project.optional-dependencies]
 # Heavy model runtimes are opt-in so the core package and test suite stay

@@ -7,6 +7,7 @@ handled centrally by :func:`ingest_records` through the repository layer.
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -44,11 +45,14 @@ class RawRecord:
 
 @dataclass(frozen=True, slots=True)
 class IngestSummary:
-    """Outcome of an ingestion batch. Counts only — never record content."""
+    """Outcome of an ingestion batch. Counts and ids only — never content."""
 
     source: str
     seen: int = 0
     created: int = 0
+    #: Ids of rows this batch actually inserted. Callers enqueue work for these
+    #: and only these — re-ingested duplicates must not schedule a second job.
+    created_item_ids: tuple[uuid.UUID, ...] = ()
 
     @property
     def duplicates(self) -> int:
@@ -75,13 +79,13 @@ def ingest_records(
 ) -> IngestSummary:
     """Persist records through the repository layer, skipping duplicates."""
     seen = 0
-    created = 0
     source = ""
+    created_ids: list[uuid.UUID] = []
 
     for record in records:
         seen += 1
         source = source or record.source
-        _, was_created = repository.upsert(
+        item, was_created = repository.upsert(
             source=record.source,
             source_id=record.source_id,
             kind=record.kind,
@@ -92,9 +96,15 @@ def ingest_records(
             raw_ref=record.raw_ref,
             meta=record.meta,
         )
-        created += int(was_created)
+        if was_created:
+            created_ids.append(item.id)
 
-    summary = IngestSummary(source=source, seen=seen, created=created)
+    summary = IngestSummary(
+        source=source,
+        seen=seen,
+        created=len(created_ids),
+        created_item_ids=tuple(created_ids),
+    )
     logger.info(
         "ingestion batch complete",
         extra=log_context(

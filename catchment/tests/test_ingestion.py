@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import uuid
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -14,15 +16,16 @@ class FakeItemRepository:
     """Stands in for the real repository, modelling the unique constraint."""
 
     def __init__(self) -> None:
-        self.keys: set[tuple[str, str]] = set()
+        self.rows: dict[tuple[str, str], SimpleNamespace] = {}
         self.calls: list[dict[str, Any]] = []
 
-    def upsert(self, **kwargs: Any) -> tuple[object, bool]:
+    def upsert(self, **kwargs: Any) -> tuple[SimpleNamespace, bool]:
         self.calls.append(kwargs)
         key = (kwargs["source"], kwargs["source_id"])
-        created = key not in self.keys
-        self.keys.add(key)
-        return object(), created
+        created = key not in self.rows
+        if created:
+            self.rows[key] = SimpleNamespace(id=uuid.uuid4(), **kwargs)
+        return self.rows[key], created
 
 
 def _record(source_id: str, **overrides: Any) -> RawRecord:
@@ -45,6 +48,15 @@ def test_new_records_are_created(repo: FakeItemRepository) -> None:
     assert summary.seen == 2
     assert summary.created == 2
     assert summary.duplicates == 0
+
+
+def test_only_created_rows_report_ids(repo: FakeItemRepository) -> None:
+    """Callers enqueue from these ids, so a duplicate must not appear here."""
+    summary = ingest_records([_record("m1"), _record("m1"), _record("m2")], repo)  # type: ignore[arg-type]
+
+    assert len(summary.created_item_ids) == 2
+    assert len(set(summary.created_item_ids)) == 2
+    assert summary.created == len(summary.created_item_ids)
 
 
 def test_repeated_source_id_is_a_duplicate(repo: FakeItemRepository) -> None:
