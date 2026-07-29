@@ -199,7 +199,7 @@ def test_result_carrying_a_trace_does_not_mutate_the_original() -> None:
 
 
 class FakeGroqResponse:
-    def __init__(self, text: str = "hello", model: str = "llama-3.3-70b-versatile") -> None:
+    def __init__(self, text: str = "hello", model: str = "openai/gpt-oss-120b") -> None:
         message = type("M", (), {"content": text})()
         self.choices = [type("C", (), {"message": message})()]
         self.model = model

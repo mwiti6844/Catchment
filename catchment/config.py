@@ -56,7 +56,14 @@ class Settings(BaseSettings):
     # catchment/llm/registry.py. Tracing is applied by the router, not the
     # provider, so it survives a provider change.
     llm_provider: str = "groq"
-    llm_model: str = "llama-3.3-70b-versatile"
+    #: Groq production models suited to this task, cheapest-first:
+    #:   openai/gpt-oss-20b       $0.075/$0.30  1000 t/s  - try if cost matters
+    #:   openai/gpt-oss-120b      $0.15/$0.60    500 t/s  - default
+    #:   llama-3.3-70b-versatile  $0.59/$0.79    280 t/s  - non-reasoning fallback
+    #: gpt-oss-120b is both faster and ~4x cheaper on input than llama-3.3-70b.
+    #: It is a reasoning model, so if JSON mode ever leaks chain-of-thought,
+    #: llama-3.3-70b-versatile is the drop-in that will not.
+    llm_model: str = "openai/gpt-oss-120b"
     llm_max_tokens: int = Field(default=2048, ge=1)
     llm_timeout_seconds: int = Field(default=60, ge=1)
     groq_api_key: SecretStr | None = None
