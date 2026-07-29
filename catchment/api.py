@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from pydantic import BaseModel
 
+from catchment.classification.embeddings import close_embedder
 from catchment.config import Settings, get_settings
 from catchment.ingestion import whatsapp
 from catchment.jobs.queue import close_pipeline_queue
@@ -45,6 +46,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         close_pipeline_queue()
+        close_embedder()
         dispose_engine()
         logger.info("api stopping")
 

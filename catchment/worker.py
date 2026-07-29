@@ -11,6 +11,7 @@ import sys
 from redis import Redis
 from rq import Worker
 
+from catchment.classification.embeddings import close_embedder
 from catchment.config import get_settings
 from catchment.jobs.queue import QUEUE_NAME
 from catchment.logging_config import configure_logging, get_logger, log_context
@@ -38,6 +39,7 @@ def main() -> int:
     finally:
         # Same reasoning as the API lifespan: a container restart must not
         # strand the connection pool this process opened.
+        close_embedder()
         dispose_engine()
     return 0
 

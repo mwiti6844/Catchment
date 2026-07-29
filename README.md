@@ -103,16 +103,35 @@ yet scheduled — it produces `RawRecord`s on demand and has no poller job behin
 it. It over-fetches on purpose: the unique constraint absorbs repeats, so there
 is no local UID watermark to drift out of sync.
 
+### Classification
+
+```
+text ──BGE-M3──> embedding ──nearest items──> candidate tags ──LLM──> assigned tags
+```
+
+Embedding happens *before* the model is asked, so the prompt carries the tags
+already in use on similar content. Skipping that is what makes a classifier
+coin `ML Ops` next to an existing `MLOps`.
+
+- **The LLM is routed, not hard-wired.** `CATCHMENT_LLM_PROVIDER` selects a
+  registered provider (Groq today); adding one is a registration, not a change
+  to the classifier. Langfuse tracing wraps the provider, so "every LLM call is
+  traced" survives a provider swap instead of being something each new provider
+  must remember.
+- **BGE-M3 runs in its own container** (`embedder/`), because FlagEmbedding
+  pulls ~3GB of torch the API and worker never use.
+- **Classification degrades rather than failing.** An embedder outage, a rate
+  limit, or an unparseable response falls back to the `unclassified` tag — the
+  item stays visible in the review queue instead of being stranded.
+
 Deliberately still placeholders — these are *not* the real implementations:
 
 - **Passthrough extractor** copies source-supplied text straight through. Real
   OCR (PaddleOCR-VL) and transcription (faster-whisper) are a later slice, so
   media items currently produce an extraction only if they carry a caption.
-- **Placeholder classification** assigns every item the single `unclassified`
-  tag. No embeddings, no similarity, no LLM tag creation yet. It exists so the
-  chain is observable end-to-end before any model weights are involved. Both
-  the tag and the assignment are marked `origin='import'` rather than `'llm'`,
-  so this placeholder can't be mistaken for a model decision later.
+- **`unclassified` is now the fallback**, not the default path. It is marked
+  `origin='import'` rather than `'llm'`, so a degraded classification is
+  distinguishable from a model decision when reviewing the graph.
 
 ## Checks
 

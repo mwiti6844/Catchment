@@ -11,6 +11,7 @@ Two rules are load-bearing and enforced in this module:
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Final
@@ -309,6 +310,25 @@ class TagRepository:
         """Return descendants of ``tag_id``, never walking deeper than the bound."""
         stmt = build_descendants_stmt(tag_id, max_depth or self._max_depth)
         return [TagRef(tag_id=row[0], depth=row[1]) for row in self._session.execute(stmt)]
+
+    def labels_for_items(self, item_ids: Sequence[uuid.UUID]) -> list[str]:
+        """Return the distinct active tag labels applied to ``item_ids``.
+
+        This is the candidate list handed to the classifier. Merged and retired
+        tags are excluded: offering the classifier a tag that has been merged
+        away would reintroduce the duplicate a human just resolved.
+        """
+        if not item_ids:
+            return []
+
+        stmt = (
+            select(Tag.label)
+            .join(ItemTag, ItemTag.tag_id == Tag.id)
+            .where(and_(ItemTag.item_id.in_(item_ids), Tag.status == "active"))
+            .distinct()
+            .order_by(Tag.label)
+        )
+        return list(self._session.execute(stmt).scalars())
 
     def assign(
         self,

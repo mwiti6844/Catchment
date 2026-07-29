@@ -1,0 +1,6 @@
+# Pinned separately from the main package: these are the ~3GB of wheels the API
+# and worker images deliberately do not carry.
+fastapi>=0.115
+uvicorn[standard]>=0.32
+pydantic>=2.9
+FlagEmbedding>=1.3

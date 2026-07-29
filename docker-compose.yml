@@ -7,6 +7,8 @@ name: catchment
 x-service-env: &service-env
   CATCHMENT_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-catchment}:${POSTGRES_PASSWORD:-catchment}@postgres:5432/${POSTGRES_DB:-catchment}
   CATCHMENT_REDIS_URL: redis://redis:6379/0
+  CATCHMENT_EMBEDDER_URL: http://embedder:8001
+  CATCHMENT_LANGFUSE_HOST: http://langfuse:3000
 
 x-app: &app
   build:
@@ -64,6 +66,53 @@ services:
     command: ["alembic", "upgrade", "head"]
     restart: "no"
 
+  # BGE-M3. Its own image because FlagEmbedding pulls ~3GB of torch that the
+  # API and worker never use. First start downloads the model into a volume.
+  embedder:
+    build:
+      context: ./embedder
+    image: catchment-embedder:dev
+    ports:
+      - "${EMBEDDER_PORT:-8001}:8001"
+    volumes:
+      - models:/models
+    restart: unless-stopped
+
+  # Langfuse v2: Postgres only. v3 additionally requires ClickHouse, MinIO and
+  # its own Redis — four more containers than a personal pipeline needs.
+  langfuse:
+    image: langfuse/langfuse:2
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-catchment}:${POSTGRES_PASSWORD:-catchment}@postgres:5432/langfuse
+      NEXTAUTH_URL: http://localhost:${LANGFUSE_PORT:-3000}
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:-local-dev-nextauth-secret}
+      SALT: ${LANGFUSE_SALT:-local-dev-salt}
+      ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:-0000000000000000000000000000000000000000000000000000000000000000}
+      TELEMETRY_ENABLED: "false"
+    ports:
+      - "${LANGFUSE_PORT:-3000}:3000"
+    depends_on:
+      langfuse-db:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # Langfuse keeps its own schema; created here so it never shares Catchment's.
+  langfuse-db:
+    image: pgvector/pgvector:pg16
+    entrypoint:
+      - sh
+      - -c
+      - |
+        until pg_isready -h postgres -U ${POSTGRES_USER:-catchment}; do sleep 1; done
+        psql "postgresql://${POSTGRES_USER:-catchment}:${POSTGRES_PASSWORD:-catchment}@postgres:5432/postgres" \
+          -tc "SELECT 1 FROM pg_database WHERE datname='langfuse'" | grep -q 1 || \
+        psql "postgresql://${POSTGRES_USER:-catchment}:${POSTGRES_PASSWORD:-catchment}@postgres:5432/postgres" \
+          -c "CREATE DATABASE langfuse"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
   api:
     <<: *app
     ports:
@@ -81,3 +130,5 @@ services:
 volumes:
   pgdata:
   redisdata:
+  # BGE-M3 weights (~2GB). Survives image rebuilds so they download once.
+  models:

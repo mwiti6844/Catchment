@@ -1,0 +1,58 @@
+{
+  "_comment": "Raw model responses covering every parse path. Each case names the behaviour it pins; 'known_tags' is the candidate list that was in the prompt.",
+  "cases": [
+    {
+      "name": "reuses_existing_and_coins_one",
+      "known_tags": ["LLM Evaluation", "Kenyan Fintech"],
+      "raw": "{\"tags\": [{\"label\": \"LLM Evaluation\", \"confidence\": 0.91, \"is_new\": false}, {\"label\": \"Prompt Caching\", \"confidence\": 0.74, \"is_new\": true, \"description\": \"Reusing model context across requests to cut cost.\"}]}",
+      "expected_slugs": ["llm-evaluation", "prompt-caching"],
+      "expected_new": ["prompt-caching"]
+    },
+    {
+      "name": "model_lies_about_novelty",
+      "_why": "The model claims a tag is new that we showed it. The candidate list is authoritative, otherwise this coins a duplicate.",
+      "known_tags": ["MLOps"],
+      "raw": "{\"tags\": [{\"label\": \"MLOps\", \"confidence\": 0.88, \"is_new\": true, \"description\": \"Operating ML systems.\"}]}",
+      "expected_slugs": ["mlops"],
+      "expected_new": []
+    },
+    {
+      "name": "markdown_fenced_json",
+      "_why": "Models wrap JSON in a code fence even when told not to.",
+      "known_tags": [],
+      "raw": "```json\n{\"tags\": [{\"label\": \"Catchment Hydrology\", \"confidence\": 0.8, \"is_new\": true, \"description\": \"How water moves through a drainage basin.\"}]}\n```",
+      "expected_slugs": ["catchment-hydrology"],
+      "expected_new": ["catchment-hydrology"]
+    },
+    {
+      "name": "drops_unusable_entries_keeps_rest",
+      "_why": "One malformed entry must not discard the whole classification.",
+      "known_tags": ["Rust"],
+      "raw": "{\"tags\": [{\"label\": \"Rust\", \"confidence\": 0.9}, {\"label\": \"\", \"confidence\": 0.9}, {\"label\": \"Valid\", \"confidence\": 5}, {\"confidence\": 0.5}, \"not-an-object\", {\"label\": \"Borrow Checker\", \"confidence\": 0.6, \"description\": \"Rust's compile-time ownership analysis.\"}]}",
+      "expected_slugs": ["rust", "borrow-checker"],
+      "expected_new": ["borrow-checker"]
+    },
+    {
+      "name": "deduplicates_repeated_labels",
+      "known_tags": [],
+      "raw": "{\"tags\": [{\"label\": \"Kenyan Fintech\", \"confidence\": 0.9, \"description\": \"d\"}, {\"label\": \"kenyan  fintech\", \"confidence\": 0.4, \"description\": \"d\"}]}",
+      "expected_slugs": ["kenyan-fintech"],
+      "expected_new": ["kenyan-fintech"]
+    },
+    {
+      "name": "unicode_label_normalised",
+      "known_tags": [],
+      "raw": "{\"tags\": [{\"label\": \"Café Culture\", \"confidence\": 0.65, \"description\": \"Coffee shops as social infrastructure.\"}]}",
+      "expected_slugs": ["cafe-culture"],
+      "expected_new": ["cafe-culture"]
+    }
+  ],
+  "unparseable": [
+    {"name": "not_json", "raw": "I think this is about machine learning."},
+    {"name": "json_array_not_object", "raw": "[{\"label\": \"X\", \"confidence\": 0.5}]"},
+    {"name": "missing_tags_key", "raw": "{\"labels\": []}"},
+    {"name": "empty_tags", "raw": "{\"tags\": []}"},
+    {"name": "all_entries_unusable", "raw": "{\"tags\": [{\"label\": \"\", \"confidence\": 0.5}, {\"label\": \"ok\", \"confidence\": \"high\"}]}"},
+    {"name": "empty_string", "raw": ""}
+  ]
+}

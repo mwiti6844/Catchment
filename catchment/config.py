@@ -61,6 +61,13 @@ class Settings(BaseSettings):
     llm_timeout_seconds: int = Field(default=60, ge=1)
     groq_api_key: SecretStr | None = None
 
+    # --- Classification ---
+    #: Suggestions below this confidence are discarded rather than assigned.
+    classification_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    #: How many similar items to inspect for candidate tags. Too few and the
+    #: classifier coins duplicates it could have reused.
+    classification_neighbours: int = Field(default=8, ge=1, le=100)
+
     # --- Langfuse (self-hosted) ---
     langfuse_host: str = "http://localhost:3000"
     langfuse_public_key: SecretStr | None = None
