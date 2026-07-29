@@ -156,7 +156,10 @@ services:
   # The webhook API is deliberately public; this is deliberately not. On the VPS
   # it is reached through an SSH tunnel (see README).
   appsmith:
-    image: appsmith/appsmith-ce:latest
+    # Stateful dashboard: upgrades can migrate appsmith_stacks and its internal
+    # application schema, so they must be deliberate. Back up the volume and
+    # export the application before changing this digest.
+    image: appsmith/appsmith-ce:v2.2@sha256:dc17b968c88eebf42b85c2e22b97efb55f2339b2d685e48f804c5f87bdd9d4e5
     ports:
       - "127.0.0.1:${APPSMITH_PORT:-8080}:80"
     volumes:

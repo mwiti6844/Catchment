@@ -1,81 +1,55 @@
 # Admin (Appsmith)
 
-Appsmith reads Postgres directly — there is no custom frontend and no admin API
-to build here. This directory holds the SQL each page runs, checked in so the
-dashboard is reproducible, plus exported Appsmith application JSON.
+The local admin surface has six pages: **Inbox**, **Item detail**, **Tags**,
+**Failures**, **Review**, and **Queue**. Appsmith is bound to
+`127.0.0.1:8080`; it is never routed through Caddy or the development tunnel.
 
-```
+The page-by-page canvas specification, datasource settings, REST bindings, and
+export procedure live in
+[`appsmith-export/README.md`](appsmith-export/README.md). Treat that file as the
+canonical build guide.
+
+## Version-controlled pieces
+
+```text
 queries/
-  00_appsmith_role.sql      run once as superuser; the grants below
-  01_taxonomy_review.sql    page 1 — proposals awaiting approval
-  02_recent_assignments.sql page 2 — what the classifier has been doing
-  03_dead_letter.sql        page 3 — stages that degraded
-apps/                       exported application JSON ("Export application")
+  00_appsmith_role.sql       restricted database role, converged on startup
+  01_taxonomy_review.sql     pending merge/split proposals
+  02_recent_assignments.sql  classifier assignments and coined tags
+  03_dead_letter.sql         degraded stages and resolution
+  04_inbox_and_detail.sql    inbox, item text, tags, and trace provenance
+  05_taxonomy.sql            taxonomy and near-duplicate candidates
+appsmith-export/
+  README.md                  canonical six-page canvas specification
+  application.json           created by Appsmith Export after the first build
 ```
 
-Every read query in `queries/` has been executed against the live schema.
+`application.json` is deliberately absent until the application has been built
+once in Appsmith's browser editor. Its internal widget tree and binding IDs
+must not be fabricated by hand.
 
-## Why this dashboard exists
+## Data and decision boundaries
 
-The classifier coins tags autonomously from live model output. Without a
-review surface you have no way to see what it chose, which near-duplicates it
-created, or which items it silently failed to classify. Those are the three
-pages.
+Appsmith uses two datasources:
 
-## Page 1 — Taxonomy review
+1. `catchment-db`, connected as the restricted `appsmith` PostgreSQL role;
+2. `catchment-internal`, connected to `http://api:8000/internal` with
+   `X-Internal-Token`.
 
-The only screen that writes. Lists `taxonomy_proposals` where
-`status = 'pending'`, resolving the tag UUIDs inside the JSONB payload to
-labels so a reviewer sees names.
+The database role can read all tables, update only the decision columns on
+`taxonomy_proposals`, and set only `pipeline_failures.resolved_at`. It cannot
+insert or delete rows, modify items/tags/extractions, or set
+`taxonomy_proposals.applied_at`.
 
-Approve/reject sets `status`, `reviewed_by`, `reviewed_at`. **Applying an
-approved merge is a backend job, not an Appsmith query** — the dashboard never
-writes `status = 'applied'`. `mark_applied()` refuses anything not already
-approved, and `ck_proposals_applied_status` enforces it in the database.
+Approve and Reject actions nevertheless go through the authenticated REST
+endpoint, not raw SQL. The repository performs a compare-and-swap decision
+(`WHERE status = 'pending'`) so concurrent reviewers cannot overwrite one
+another. Applying an approved merge remains a backend job.
 
-## Page 2 — Recent assignments
+The default Inbox shows metadata and extracted character counts rather than
+personal correspondence. Full extracted text appears only on Item detail.
+Model-derived tag assignments carry their persisted Langfuse `trace_id`;
+rule-based fallbacks correctly have no trace.
 
-Recent `item_tags` with confidence and provenance. `assigned_by` distinguishes
-a model decision (`llm`) from a degraded fallback or backfill (`import`) —
-these are different events and should not be read as the same thing.
-
-Also: newly coined tags with item counts (watch for near-duplicates — that is
-what a merge proposal is for), and a low-confidence pane, which is where human
-attention is worth most.
-
-**Item text is never rendered** — only `length(e.text)`. This is personal
-correspondence and the dashboard is open on a screen all day.
-
-## Page 3 — Dead letter
-
-The pipeline degrades rather than fails: a classifier outage still lands the
-item, tagged `unclassified`. That keeps ingestion resilient and makes the
-failure invisible, which is why `pipeline_failures` exists.
-
-Note that **RQ's own failed-job registry lives in Redis and Appsmith cannot
-read it**. `pipeline_failures` is the Postgres-visible record; a job that dies
-outright (rather than degrading) still only appears in RQ.
-
-An item on the `unclassified` tag with no open failure row had nothing to
-classify — a captionless image awaiting OCR — rather than a classifier problem.
-Query 3 on that page distinguishes the two.
-
-## Connection
-
-Appsmith connects as the `appsmith` role from `queries/00_appsmith_role.sql`,
-never as the application user. The review-gate invariant is enforced by
-**grants**, not by dashboard code:
-
-| Privilege | Scope |
-| --- | --- |
-| `SELECT` | every table |
-| `UPDATE (status, reviewed_by, reviewed_at)` | `taxonomy_proposals` only |
-| `UPDATE (resolved_at)` | `pipeline_failures` only |
-| `INSERT` / `DELETE` | **nowhere** |
-
-So a bug in the dashboard cannot touch items, tags, or extractions at all.
-`applied_at` is deliberately not grantable: a constraint would reject it
-anyway, but the missing grant makes the boundary explicit rather than relying
-on the constraint to catch a query that should never have been written.
-
-Credentials live in Appsmith's own datasource config — never in this repository.
+Credentials live only in `.env` and Appsmith's datasource configuration. They
+must never appear in the application export.
