@@ -70,11 +70,15 @@ The webhook does only what has to be synchronous — verify the signature,
 upsert the item, enqueue a job — and returns. Meta retries anything it thinks
 was slow or failed, so no extraction or model call happens in the request.
 
-### Receiving real WhatsApp traffic
+### Receiving real WhatsApp traffic (local development only)
 
-Meta cannot deliver to `localhost`, so a public HTTPS URL is required before
-slice one can be finished against a real message. A tunnel is enough — no
-hosting decision needed yet:
+For production use a stable HTTPS endpoint instead — see
+[Production deployment](#production-deployment).
+
+Meta cannot deliver to `localhost`, so a public HTTPS URL is required. A quick
+tunnel is enough for development. Its hostname is **random and changes on every
+restart**, so Meta delivery breaks whenever it stops — fine while iterating,
+not something to leave running:
 
 ```bash
 docker compose up -d
@@ -132,6 +136,22 @@ Deliberately still placeholders — these are *not* the real implementations:
 - **`unclassified` is now the fallback**, not the default path. It is marked
   `origin='import'` rather than `'llm'`, so a degraded classification is
   distinguishable from a model decision when reviewing the graph.
+
+## Production deployment
+
+A DuckDNS subdomain, a VPS, and Caddy terminating TLS with automatic Let's
+Encrypt certificates. Full runbook: **[deploy/README.md](deploy/README.md)**.
+
+```bash
+sudo ./deploy/provision.sh          # once, on a fresh Ubuntu VPS
+docker compose --env-file .env --env-file .env.production \
+  -f docker-compose.yml -f docker-compose.prod.yml up -d
+```
+
+The overlay leaves the base `docker-compose.yml` untouched, so local
+development is unaffected. In production **only Caddy publishes ports** — the
+base file otherwise exposes Postgres, Redis, the embedder and Langfuse to the
+host, and `ufw` does not filter Docker-published ports. Always pass both files.
 
 ## Tracing (Langfuse)
 

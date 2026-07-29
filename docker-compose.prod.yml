@@ -1,0 +1,57 @@
+# Production overlay. Use alongside the base file, never instead of it:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# The base file is unchanged so local development keeps its published ports.
+
+services:
+  # The only internet-facing container. Terminates TLS and proxies to api.
+  caddy:
+    image: caddy:latest
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Named, not anonymous: /data holds the Let's Encrypt account key and
+      # issued certificates. An anonymous volume is discarded on `docker compose
+      # down`, so every recreation would re-request certificates and walk into
+      # Let's Encrypt's rate limit (5 duplicate certs per week).
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      DUCKDNS_DOMAIN: ${DUCKDNS_DOMAIN:?set DUCKDNS_DOMAIN in .env.production}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env.production}
+    depends_on:
+      - api
+
+  # Nothing below this line publishes a host port in production.
+  #
+  # This is the actual network control, not ufw. Docker writes its own iptables
+  # rules into the DOCKER-USER and nat chains, which are evaluated *before*
+  # ufw's filter rules — so a published port is reachable from the internet
+  # even when `ufw status` shows it denied. Leaving Postgres on 5432 and
+  # trusting ufw would expose the database while looking firewalled.
+  #
+  # `!reset` removes the base file's list rather than appending to it: Compose
+  # concatenates sequence values across overlay files by default, so an empty
+  # list here would be a no-op.
+  api:
+    ports: !reset []
+
+  postgres:
+    ports: !reset []
+
+  redis:
+    ports: !reset []
+
+  embedder:
+    ports: !reset []
+
+  langfuse:
+    ports: !reset []
+
+volumes:
+  caddy_data:
+  caddy_config:

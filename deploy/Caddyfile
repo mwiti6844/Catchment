@@ -1,0 +1,37 @@
+# Caddy obtains and renews Let's Encrypt certificates automatically. There is
+# no manual certbot step, no cron renewal, and no cert paths to configure —
+# it needs port 80 reachable for the ACME HTTP challenge, which is why ufw
+# opens 80 as well as 443.
+{
+	# ACME registration address. Let's Encrypt uses it for expiry warnings.
+	email {$ACME_EMAIL}
+}
+
+{$DUCKDNS_DOMAIN} {
+	# api listens on 8000 *inside* the compose network. The 8010 seen in local
+	# dev is only a host-side port used to avoid a clash with another service
+	# on the workstation; it does not exist in the container.
+	reverse_proxy api:8000
+
+	# Meta signs webhooks over the raw request body, so nothing may alter it in
+	# transit. Caddy does not rewrite bodies by default — this is a reminder not
+	# to add compression or body-modifying handlers here, which would break
+	# X-Hub-Signature-256 verification.
+
+	encode zstd gzip
+
+	log {
+		output stdout
+		# Query strings are NOT logged: Meta's subscription handshake carries
+		# hub.verify_token there. This is the same leak already fixed in the
+		# application's Uvicorn access logger.
+		format filter {
+			wrap console
+			fields {
+				request>uri query {
+					replace REDACTED
+				}
+			}
+		}
+	}
+}

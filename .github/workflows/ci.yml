@@ -78,6 +78,22 @@ jobs:
       - name: Lint log calls (no f-strings in logging)
         run: python tools/check_log_fstrings.py catchment
 
+      # Provisioning scripts get linted like everything else. shellcheck is the
+      # right tool for shell — forcing a pytest-shaped test onto them would
+      # test the harness, not the script.
+      - name: Lint shell scripts (shellcheck)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+          shellcheck deploy/*.sh
+
+      - name: Validate the production compose overlay
+        env:
+          DUCKDNS_DOMAIN: example.duckdns.org
+          ACME_EMAIL: ci@example.com
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.prod.yml config --quiet
+
       - name: Create the migration database
         # psycopg v3 ships as a package dependency, so no extra client tooling
         # (psql/createdb) is assumed to exist on the runner.
