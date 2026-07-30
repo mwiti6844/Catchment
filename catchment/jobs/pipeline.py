@@ -21,6 +21,8 @@ from catchment.classification.placeholder import assign_unclassified
 from catchment.classification.service import classify_item
 from catchment.classification.types import Classifier
 from catchment.config import MissingConfiguration, Settings, get_settings
+from catchment.extraction import ExtractionResult
+from catchment.extraction.article import ArticleExtractionError, extract_article
 from catchment.extraction.passthrough import passthrough
 from catchment.ingestion.media import MediaFetchError, fetch_media
 from catchment.llm.errors import LLMError
@@ -81,7 +83,11 @@ def run_pipeline(
         settings=resolved,
     )
 
-    extraction = passthrough(text)
+    # Article text beats a source-supplied caption: a shared link whose message
+    # is "worth reading" classifies on the word "reading" without this.
+    extraction = _extract_article(item=item, item_id=item_id, failures=failures)
+    if extraction is None:
+        extraction = passthrough(text)
     if extraction is not None:
         items.add_extraction(
             item_id=item_id,
@@ -168,6 +174,37 @@ def _fetch_media(
 
     items.set_raw_ref(item_id=item_id, raw_ref=fetched.ref)
     return True
+
+
+def _extract_article(
+    *,
+    item: Any,
+    item_id: uuid.UUID,
+    failures: PipelineFailureRepository | None,
+) -> ExtractionResult | None:
+    """Fetch and parse this item's URL, if it has one worth fetching.
+
+    Returns None when there is nothing to do, so the caller falls back to
+    whatever text the source supplied. A paywalled or dead link is an ordinary
+    outcome — the item keeps its caption and stays reviewable.
+    """
+    if item.kind not in ("link", "article") or not item.url:
+        return None
+
+    try:
+        return extract_article(item.url)
+    except ArticleExtractionError as error:
+        logger.info(
+            "article extraction failed; falling back to source text",
+            extra=log_context(item_id=str(item_id), error=type(error).__name__),
+        )
+        if failures is not None:
+            failures.record(
+                item_id=item_id,
+                stage="article_extraction",
+                error_type=type(error).__name__,
+            )
+        return None
 
 
 def _classify(

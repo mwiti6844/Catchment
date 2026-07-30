@@ -28,8 +28,12 @@ class FakeItems:
         exists: bool = True,
         meta: dict[str, Any] | None = None,
         raw_ref: str | None = None,
+        kind: str = "text",
+        url: str | None = None,
     ) -> None:
         self._exists = exists
+        self._kind = kind
+        self._url = url
         # Mirrors the real row: the media path reads both of these, and a
         # double without them hides the branch entirely.
         self._meta = meta or {}
@@ -40,7 +44,13 @@ class FakeItems:
     def get(self, item_id: uuid.UUID) -> Any:
         if not self._exists:
             return None
-        return SimpleNamespace(id=item_id, meta=self._meta, raw_ref=self.raw_ref)
+        return SimpleNamespace(
+            id=item_id,
+            meta=self._meta,
+            raw_ref=self.raw_ref,
+            kind=self._kind,
+            url=self._url,
+        )
 
     def set_raw_ref(self, *, item_id: uuid.UUID, raw_ref: str) -> None:
         self.raw_ref = raw_ref
@@ -467,3 +477,85 @@ def test_untexted_item_gets_the_placeholder_tag(
 
     assert tags.created[0]["slug"] == UNCLASSIFIED_SLUG
     assert items.embeddings == [], "nothing to embed without text"
+
+
+# --------------------------------------------------------------------------- #
+# Article extraction
+# --------------------------------------------------------------------------- #
+
+
+def test_a_link_item_is_extracted_from_its_url(
+    tags: FakeTags, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from catchment.extraction import ExtractionResult
+
+    items = FakeItems(kind="link", url="https://example.com/post")
+    monkeypatch.setattr(
+        "catchment.jobs.pipeline.extract_article",
+        lambda url: ExtractionResult(extractor="trafilatura", text="the real article"),
+    )
+
+    _run(items, tags, "worth reading")
+
+    assert items.extractions[0]["text"] == "the real article"
+    assert items.extractions[0]["extractor"] == "trafilatura"
+
+
+def test_article_text_beats_the_forwarding_message(
+    tags: FakeTags, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """"worth reading" would otherwise be the entire basis for classification."""
+    from catchment.extraction import ExtractionResult
+
+    items = FakeItems(kind="link", url="https://example.com/post")
+    monkeypatch.setattr(
+        "catchment.jobs.pipeline.extract_article",
+        lambda url: ExtractionResult(extractor="trafilatura", text="hydrology basins"),
+    )
+
+    _run(items, tags, "worth reading")
+
+    assert "worth reading" not in items.extractions[0]["text"]
+
+
+def test_a_text_item_never_reaches_the_article_extractor(
+    tags: FakeTags, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "catchment.jobs.pipeline.extract_article",
+        lambda url: pytest.fail("a text message has no article to fetch"),
+    )
+
+    _run(FakeItems(), tags, BODY)
+
+
+def test_a_dead_link_falls_back_to_the_source_text(
+    tags: FakeTags, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A paywall must not cost the item — the caption is still something."""
+    from catchment.extraction.article import ArticleExtractionError
+
+    items = FakeItems(kind="link", url="https://example.com/paywalled")
+    failures = FakeFailures()
+
+    def boom(url: str) -> Any:
+        raise ArticleExtractionError("page carried no article text")
+
+    monkeypatch.setattr("catchment.jobs.pipeline.extract_article", boom)
+
+    result = _run(items, tags, "worth reading", failures=failures)
+
+    assert items.extractions[0]["text"] == "worth reading"
+    assert result.tags_assigned >= 1
+    assert failures.recorded[0]["stage"] == "article_extraction"
+
+
+def test_a_link_with_no_url_is_left_to_the_passthrough(
+    tags: FakeTags, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "catchment.jobs.pipeline.extract_article",
+        lambda url: pytest.fail("nothing to fetch"),
+    )
+
+    _run(FakeItems(kind="link", url=None), tags, "some text")

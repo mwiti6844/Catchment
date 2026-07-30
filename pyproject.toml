@@ -19,6 +19,13 @@ dependencies = [
     "rq>=2.0",
     "redis>=5.2",
     "httpx>=0.28",
+    # Article extraction runs in the default pipeline for every link item, so
+    # it is not optional. The heavy model runtimes stay in [extraction].
+    "trafilatura>=2.0",
+    # Feeds are third-party documents. The stdlib XML parser expands entity
+    # bombs; this refuses them.
+    "defusedxml>=0.7",
+    "types-defusedxml>=0.7",
     # Pinned to v2 to match the langfuse/langfuse:2 server in docker-compose.
     # The v3+ SDK posts OTLP to an endpoint a v2 server does not expose, and
     # fails silently: auth_check passes while nothing is ingested.
@@ -29,15 +36,17 @@ dependencies = [
 [project.scripts]
 catchment-worker = "catchment.worker:main"
 catchment-poll-email = "catchment.jobs.polling:main"
+catchment-poll-substack = "catchment.jobs.polling:main_substack"
 catchment-internal-api = "catchment.internal_app:main"
 
 [project.optional-dependencies]
 # Heavy model runtimes are opt-in so the core package and test suite stay
 # installable (and fast) without CUDA/Paddle wheels.
 extraction = [
+    # Model runtimes only. These are multi-GB and run in their own containers;
+    # trafilatura is a core dependency because the pipeline runs it by default.
     "faster-whisper>=1.1",
     "paddleocr>=2.9",
-    "trafilatura>=2.0",
 ]
 embedding = [
     "FlagEmbedding>=1.3",

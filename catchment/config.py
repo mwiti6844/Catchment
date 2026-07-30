@@ -148,6 +148,10 @@ class Settings(BaseSettings):
     #: response shapes underneath the parser.
     whatsapp_graph_version: str = "v21.0"
     x_bookmarks_token: SecretStr | None = None
+    #: Comma-separated RSS/Atom feed URLs. Not a secret, but a subscription
+    #: list is personal, so it is configuration rather than something checked
+    #: into the repository.
+    substack_feeds: str = ""
     imap_host: str | None = None
     imap_port: int = Field(default=993, ge=1, le=65535)
     imap_username: str | None = None
@@ -176,6 +180,13 @@ class Settings(BaseSettings):
         if isinstance(value, str) and not value.strip():
             return cls.model_fields[str(info.field_name)].default
         return value
+
+    @property
+    def feed_urls(self) -> tuple[str, ...]:
+        """Configured feeds, split and cleaned. Empty when unset."""
+        return tuple(
+            url.strip() for url in self.substack_feeds.split(",") if url.strip()
+        )
 
     @field_validator("langfuse_host")
     @classmethod

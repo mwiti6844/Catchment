@@ -15,9 +15,11 @@ import sys
 import uuid
 from dataclasses import dataclass
 
+from catchment.config import get_settings
 from catchment.dependencies import TaskQueue
 from catchment.ingestion.base import Connector, ingest_records
 from catchment.ingestion.email_imap import ImapError, build_connector
+from catchment.ingestion.substack import SubstackConnector
 from catchment.jobs.queue import get_pipeline_queue
 from catchment.logging_config import configure_logging, get_logger, log_context
 from catchment.storage.db import dispose_engine, session_scope
@@ -100,6 +102,33 @@ def poll_source(connector: Connector, queue: TaskQueue) -> PollSummary:
 def poll_email() -> PollSummary:
     """RQ job / cron entry point: poll the configured IMAP folder."""
     return poll_source(build_connector(), get_pipeline_queue())
+
+
+def poll_substack() -> PollSummary:
+    """RQ job / cron entry point: poll every configured RSS/Atom feed.
+
+    Records are links, so no text is passed to the pipeline — the article
+    extractor recovers it from the URL. Passing the feed's own summary would
+    classify each post on its teaser.
+    """
+    feeds = get_settings().feed_urls
+    if not feeds:
+        logger.info("no feeds configured; nothing to poll")
+        return PollSummary(source="substack", seen=0, created=0, queued=0)
+    return poll_source(SubstackConnector(feeds=feeds), get_pipeline_queue())
+
+
+def main_substack() -> int:
+    """Console entry point for ``catchment-poll-substack``."""
+    configure_logging()
+    try:
+        poll_substack()
+    except Exception:
+        logger.exception("substack poll failed")
+        return 1
+    finally:
+        dispose_engine()
+    return 0
 
 
 def main() -> int:
