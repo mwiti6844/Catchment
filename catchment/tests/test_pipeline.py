@@ -22,13 +22,28 @@ BODY = "Forwarded article about Kenyan fintech — keep this out of the logs"
 
 
 class FakeItems:
-    def __init__(self, *, exists: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        exists: bool = True,
+        meta: dict[str, Any] | None = None,
+        raw_ref: str | None = None,
+    ) -> None:
         self._exists = exists
+        # Mirrors the real row: the media path reads both of these, and a
+        # double without them hides the branch entirely.
+        self._meta = meta or {}
+        self.raw_ref = raw_ref
         self.extractions: list[dict[str, Any]] = []
         self.embeddings: list[dict[str, Any]] = []
 
     def get(self, item_id: uuid.UUID) -> Any:
-        return SimpleNamespace(id=item_id) if self._exists else None
+        if not self._exists:
+            return None
+        return SimpleNamespace(id=item_id, meta=self._meta, raw_ref=self.raw_ref)
+
+    def set_raw_ref(self, *, item_id: uuid.UUID, raw_ref: str) -> None:
+        self.raw_ref = raw_ref
 
     def add_extraction(self, **kwargs: Any) -> Any:
         self.extractions.append(kwargs)
@@ -106,6 +121,9 @@ def _run(
     *,
     embedder: Any = None,
     classifier: Any = None,
+    store: Any = None,
+    failures: Any = None,
+    settings: Any = None,
 ) -> Any:
     """Always inject the embedder and classifier.
 
@@ -120,7 +138,156 @@ def _run(
         text=text,
         embedder=embedder or FakeEmbedder(),
         classifier=classifier or FakeClassifier(),
+        store=store,
+        failures=failures,
+        settings=settings,
     )
+
+
+# --------------------------------------------------------------------------- #
+# Media fetch
+# --------------------------------------------------------------------------- #
+
+
+class FakeStore:
+    """Records what was stored, so a skipped fetch is distinguishable."""
+
+    def __init__(self) -> None:
+        self.puts: list[str] = []
+
+    def put(self, key: str, data: bytes) -> str:
+        self.puts.append(key)
+        return f"blob://{key}"
+
+    def open(self, ref: str) -> bytes:
+        return b""
+
+    def exists(self, ref: str) -> bool:
+        return True
+
+    def delete(self, ref: str) -> None:
+        return None
+
+
+class FakeFailures:
+    def __init__(self) -> None:
+        self.recorded: list[dict[str, Any]] = []
+
+    def record(self, **kwargs: Any) -> Any:
+        self.recorded.append(kwargs)
+        return SimpleNamespace(id=uuid.uuid4())
+
+
+def media_settings(**overrides: Any) -> Any:
+    from catchment.config import Settings
+
+    return Settings(
+        database_url="postgresql+psycopg://u:p@localhost:5432/db",
+        redis_url="redis://localhost:6379/0",
+        **overrides,
+    )
+
+
+def test_an_item_with_no_media_never_reaches_the_fetcher(
+    tags: FakeTags, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A text message must not pay for a code path it does not use."""
+    monkeypatch.setattr(
+        "catchment.jobs.pipeline.fetch_media",
+        lambda **kwargs: pytest.fail("text items have no media to fetch"),
+    )
+
+    result = _run(FakeItems(), tags, BODY)
+
+    assert result.media_fetched is False
+
+
+def test_media_is_fetched_and_the_ref_recorded(
+    tags: FakeTags, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    items = FakeItems(meta={"wa_media_id": "media-1"})
+    monkeypatch.setattr(
+        "catchment.jobs.pipeline.fetch_media",
+        lambda **kwargs: SimpleNamespace(
+            ref="blob://whatsapp/x.ogg", mime_type="audio/ogg", size_bytes=9
+        ),
+    )
+
+    result = _run(items, tags, None, store=FakeStore(), settings=media_settings())
+
+    assert result.media_fetched is True
+    assert items.raw_ref == "blob://whatsapp/x.ogg"
+
+
+def test_media_already_fetched_is_not_downloaded_again(
+    tags: FakeTags, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The job is retryable; a retry must not re-download what it already has."""
+    items = FakeItems(meta={"wa_media_id": "media-1"}, raw_ref="blob://already/there")
+    monkeypatch.setattr(
+        "catchment.jobs.pipeline.fetch_media",
+        lambda **kwargs: pytest.fail("already fetched"),
+    )
+
+    assert _run(items, tags, None, settings=media_settings()).media_fetched is False
+
+
+def test_a_failed_fetch_leaves_the_item_alive_and_records_the_failure(
+    tags: FakeTags, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unfetchable voice note still arrives as a reviewable item."""
+    from catchment.ingestion.media import MediaFetchError
+
+    items = FakeItems(meta={"wa_media_id": "media-1"})
+    failures = FakeFailures()
+
+    def boom(**kwargs: Any) -> Any:
+        raise MediaFetchError("media media-1 download was empty")
+
+    monkeypatch.setattr("catchment.jobs.pipeline.fetch_media", boom)
+
+    result = _run(items, tags, None, failures=failures, settings=media_settings())
+
+    assert result.media_fetched is False
+    assert items.raw_ref is None, "no ref may point at a blob that was never stored"
+    assert result.tags_assigned == 1, "the item is still tagged and reviewable"
+    assert failures.recorded[0]["stage"] == "media_fetch"
+
+
+def test_an_unconfigured_access_token_degrades_rather_than_failing(
+    tags: FakeTags, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No token is a deploy problem; it must not also be a lost item.
+
+    This runs the real fetch_media, so it exercises the actual configuration
+    check rather than a stand-in for it.
+    """
+    items = FakeItems(meta={"wa_media_id": "media-1"})
+    failures = FakeFailures()
+
+    result = _run(items, tags, None, failures=failures, settings=media_settings())
+
+    assert result.media_fetched is False
+    assert failures.recorded[0]["error_type"] == "MissingConfiguration"
+
+
+def test_the_media_id_is_logged_but_never_the_bytes(
+    tags: FakeTags, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    items = FakeItems(meta={"wa_media_id": "media-1"})
+    monkeypatch.setattr(
+        "catchment.jobs.pipeline.fetch_media",
+        lambda **kwargs: SimpleNamespace(
+            ref="blob://whatsapp/x.ogg", mime_type="audio/ogg", size_bytes=9
+        ),
+    )
+
+    with caplog.at_level(logging.INFO):
+        _run(items, tags, BODY, store=FakeStore(), settings=media_settings())
+
+    emitted = " ".join(r.getMessage() + str(r.__dict__) for r in caplog.records)
+    assert BODY not in emitted
+    assert "media_fetched" in emitted
 
 
 # --------------------------------------------------------------------------- #

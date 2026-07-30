@@ -39,3 +39,7 @@ htmlcov/
 # Dashboard build artefacts
 dashboard/node_modules/
 dashboard/dist/
+
+# Ingested media. Personal correspondence — same rule as .env and /secrets.
+# The default CATCHMENT_BLOB_ROOT points here when running outside Docker.
+/data/

@@ -150,6 +150,17 @@ class ItemRepository:
     def get(self, item_id: uuid.UUID) -> Item | None:
         return self._session.get(Item, item_id)
 
+    def set_raw_ref(self, *, item_id: uuid.UUID, raw_ref: str) -> None:
+        """Record where an item's media landed in blob storage.
+
+        Written after the bytes are stored, never before: a raw_ref pointing at
+        a blob that does not exist would make a failed download indistinguishable
+        from a successful one.
+        """
+        self._session.execute(
+            update(Item).where(Item.id == item_id).values(raw_ref=raw_ref)
+        )
+
     def add_extraction(
         self,
         *,

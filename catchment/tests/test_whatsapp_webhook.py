@@ -258,8 +258,22 @@ def test_image_with_caption_parsed() -> None:
     record = parsed[0].record
 
     assert record.kind == "image"
-    assert record.raw_ref == "media-abc"
     assert parsed[0].text == "look at this"
+
+
+def test_a_media_id_is_kept_as_metadata_not_as_a_blob_ref() -> None:
+    """``raw_ref`` means "a blob ref" (docs/schema.md).
+
+    A Meta media id is a pointer into someone else's API that no extractor can
+    open, so putting it in raw_ref made the column mean two different things
+    and left every reader guessing which one it held. The pipeline sets raw_ref
+    once the bytes are actually in the store.
+    """
+    parsed, _ = parse_webhook(envelope(media_message()))
+    record = parsed[0].record
+
+    assert record.raw_ref is None, "no blob exists yet"
+    assert record.meta["wa_media_id"] == "media-abc"
 
 
 def test_media_without_caption_has_no_text() -> None:

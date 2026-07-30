@@ -9,6 +9,7 @@ value, so an accidental ``logger.info(settings)`` cannot leak them.
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import (
@@ -125,11 +126,27 @@ class Settings(BaseSettings):
         ),
     )
 
+    # --- Blob storage ---
+    #: Where media bytes live. Never Postgres: a table holding voice notes and
+    #: images makes every backup and every replica a copy of the user's media.
+    #: Must be a mounted volume in production — a container layer loses content
+    #: that cannot be re-fetched once the platform's own links expire.
+    blob_root: Path = Path("./data/blobs")
+
     # --- Ingestion connectors ---
     # App secret used to verify the X-Hub-Signature-256 header on webhooks.
     whatsapp_webhook_secret: SecretStr | None = None
     # Echoed back during Meta's GET subscription handshake.
     whatsapp_verify_token: SecretStr | None = None
+    #: Graph API token used to download media. Inbound webhooks do not need it
+    #: — receiving a message is unauthenticated — but fetching the bytes behind
+    #: a media id does. Absent it, media items are ingested and left unfetched
+    #: rather than failing the webhook.
+    whatsapp_access_token: SecretStr | None = None
+    #: Graph API version used for media downloads. Pinned rather than floating:
+    #: Meta deprecates versions on a schedule, and a silent bump changes
+    #: response shapes underneath the parser.
+    whatsapp_graph_version: str = "v21.0"
     x_bookmarks_token: SecretStr | None = None
     imap_host: str | None = None
     imap_port: int = Field(default=993, ge=1, le=65535)
@@ -215,6 +232,20 @@ class Settings(BaseSettings):
                 "WhatsApp webhooks require CATCHMENT_WHATSAPP_WEBHOOK_SECRET"
             )
         return self.whatsapp_webhook_secret
+
+    def require_whatsapp_access_token(self) -> SecretStr:
+        """Return the Graph API token, raising if media download is unconfigured.
+
+        Deliberately separate from the webhook secret. Receiving a message and
+        downloading its media are different capabilities with different
+        credentials, and a deployment that only ever ingests text needs the
+        second one no more than it needs an IMAP password.
+        """
+        if self.whatsapp_access_token is None:
+            raise MissingConfiguration(
+                "Downloading WhatsApp media requires CATCHMENT_WHATSAPP_ACCESS_TOKEN"
+            )
+        return self.whatsapp_access_token
 
     def require_imap(self) -> tuple[str, str, SecretStr]:
         """Return IMAP credentials, raising if the email connector is unconfigured."""

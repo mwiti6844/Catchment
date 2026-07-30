@@ -9,6 +9,9 @@ x-service-env: &service-env
   CATCHMENT_REDIS_URL: redis://redis:6379/0
   CATCHMENT_EMBEDDER_URL: http://embedder:8001
   CATCHMENT_LANGFUSE_HOST: http://langfuse:3000
+  # Matches the blobs volume mount below. Media lives on a volume, never in
+  # Postgres and never in a container layer.
+  CATCHMENT_BLOB_ROOT: /var/lib/catchment/blobs
 
 x-app: &app
   build:
@@ -18,6 +21,11 @@ x-app: &app
     - path: .env
       required: false
   environment: *service-env
+  volumes:
+    # Ingested media. A named volume, not a container layer: these bytes cannot
+    # be re-fetched once WhatsApp's own links expire, so losing the layer loses
+    # the content. Back this up alongside pgdata.
+    - blobs:/var/lib/catchment/blobs
   depends_on:
     migrate:
       condition: service_completed_successfully
@@ -164,3 +172,5 @@ volumes:
   redisdata:
   # BGE-M3 weights (~2GB). Survives image rebuilds so they download once.
   models:
+  # Ingested media (voice notes, images). Personal content — include in backups.
+  blobs:

@@ -141,7 +141,13 @@ def _parse_message(
             return None
         kind = _MEDIA_KINDS[message_type]
         media_id = payload.get("id")
-        raw_ref = media_id if isinstance(media_id, str) else None
+        # The media id goes in meta, not raw_ref. raw_ref means "a blob ref"
+        # (docs/schema.md) and a Meta media id is a pointer into someone else's
+        # API that no extractor can open. The pipeline sets raw_ref once the
+        # bytes are actually in the store; until then this item has no blob.
+        if isinstance(media_id, str):
+            meta["wa_media_id"] = media_id
+        raw_ref = None
         caption = payload.get("caption")
         text = caption if isinstance(caption, str) else None
         if mime := payload.get("mime_type"):

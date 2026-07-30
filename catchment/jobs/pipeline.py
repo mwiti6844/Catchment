@@ -12,7 +12,8 @@ Two entry points, deliberately split:
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from typing import Any
 
 from catchment.classification.embeddings import Embedder, EmbeddingError, get_embedder
 from catchment.classification.llm_classifier import LLMClassifier
@@ -21,8 +22,10 @@ from catchment.classification.service import classify_item
 from catchment.classification.types import Classifier
 from catchment.config import MissingConfiguration, Settings, get_settings
 from catchment.extraction.passthrough import passthrough
+from catchment.ingestion.media import MediaFetchError, fetch_media
 from catchment.llm.errors import LLMError
 from catchment.logging_config import get_logger, log_context
+from catchment.storage.blobs import BlobStore, FilesystemBlobStore
 from catchment.storage.db import session_scope
 from catchment.storage.repositories import (
     ItemRepository,
@@ -42,6 +45,8 @@ class PipelineResult:
     tags_assigned: int
     classified: bool = False
     trace_id: str | None = None
+    #: True when media bytes were fetched into blob storage on this run.
+    media_fetched: bool = False
 
 
 def run_pipeline(
@@ -53,17 +58,28 @@ def run_pipeline(
     embedder: Embedder | None = None,
     classifier: Classifier | None = None,
     failures: PipelineFailureRepository | None = None,
+    store: BlobStore | None = None,
     settings: Settings | None = None,
 ) -> PipelineResult:
-    """Extract source-supplied text, then classify.
+    """Fetch any media, extract source-supplied text, then classify.
 
     Raises ``LookupError`` if the item is gone — that means the job outlived
     its row, and retrying will not help.
     """
     resolved = settings or get_settings()
 
-    if items.get(item_id) is None:
+    item = items.get(item_id)
+    if item is None:
         raise LookupError(f"item {item_id} does not exist")
+
+    media_fetched = _fetch_media(
+        items=items,
+        item=item,
+        item_id=item_id,
+        failures=failures,
+        store=store,
+        settings=resolved,
+    )
 
     extraction = passthrough(text)
     if extraction is not None:
@@ -94,9 +110,64 @@ def run_pipeline(
             extracted=extraction is not None,
             classified=result.classified,
             tags_assigned=result.tags_assigned,
+            media_fetched=media_fetched,
         ),
     )
-    return result
+    return replace(result, media_fetched=media_fetched)
+
+
+def _fetch_media(
+    *,
+    items: ItemRepository,
+    item: Any,
+    item_id: uuid.UUID,
+    failures: PipelineFailureRepository | None,
+    store: BlobStore | None,
+    settings: Settings,
+) -> bool:
+    """Download this item's media into blob storage, if it has any and has not.
+
+    Degrades rather than raising, for the same reason classification does: an
+    unfetchable voice note should still arrive as a reviewable item, and the
+    failure belongs in the dead-letter table where a human can see it — not in
+    RQ's failed registry, which the dashboard cannot read.
+
+    Idempotent by the ``raw_ref`` check, so a retried job does not re-download
+    media it already has.
+    """
+    media_id = (item.meta or {}).get("wa_media_id")
+    if not isinstance(media_id, str) or item.raw_ref is not None:
+        return False
+
+    try:
+        fetched = fetch_media(
+            media_id=media_id,
+            item_id=item_id,
+            store=store or FilesystemBlobStore(settings.blob_root),
+            settings=settings,
+        )
+    except (MediaFetchError, MissingConfiguration) as error:
+        # MediaNotAvailable is a subclass: expired media is permanent, but it
+        # degrades the same way. The distinction matters to a retry policy,
+        # not to whether this item survives.
+        logger.warning(
+            "media fetch failed; item continues without it",
+            extra=log_context(
+                item_id=str(item_id),
+                media_id=media_id,
+                error=type(error).__name__,
+            ),
+        )
+        if failures is not None:
+            failures.record(
+                item_id=item_id,
+                stage="media_fetch",
+                error_type=type(error).__name__,
+            )
+        return False
+
+    items.set_raw_ref(item_id=item_id, raw_ref=fetched.ref)
+    return True
 
 
 def _classify(
