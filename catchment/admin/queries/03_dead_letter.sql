@@ -4,7 +4,7 @@
 -- still lands the item in the review queue tagged 'unclassified'. That keeps
 -- ingestion resilient and makes the failure invisible, which is why
 -- pipeline_failures exists. RQ's own failed-job registry lives in Redis and
--- Appsmith cannot read it.
+-- The admin read model cannot read it directly.
 
 -- Q1: open failures, oldest first.
 SELECT

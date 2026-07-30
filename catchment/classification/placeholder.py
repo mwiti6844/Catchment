@@ -1,7 +1,7 @@
 """Placeholder classification for the first end-to-end slice.
 
 This is **not** the classifier. It assigns every item one ``unclassified``
-tag so the pipeline produces an ``item_tags`` row and the Appsmith queue has
+tag so the pipeline produces an ``item_tags`` row and the review queue has
 something in it, which is what makes the chain observable before any model
 weights exist. Real classification — embedding similarity, candidate
 retrieval, LLM tag creation — replaces this and is described in

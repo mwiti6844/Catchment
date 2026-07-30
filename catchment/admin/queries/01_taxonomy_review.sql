@@ -38,6 +38,6 @@ UPDATE taxonomy_proposals
  WHERE id = {{proposal_id}} AND status = 'pending'
 RETURNING id, status;
 
--- NOTE: applying an approved merge is a backend job, not an Appsmith query.
+-- NOTE: applying an approved merge is a backend job, not an admin query.
 -- The dashboard never sets status='applied' — mark_applied() refuses anything
 -- not already approved, and ck_proposals_applied_status enforces it in the DB.

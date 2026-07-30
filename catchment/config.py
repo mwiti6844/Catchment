@@ -88,11 +88,7 @@ class Settings(BaseSettings):
     #: junk tags a human then sees in review, rather than flood it.
     max_new_tags_per_item: int = Field(default=2, ge=0, le=8)
 
-    # --- Admin dashboard (Appsmith) ---
-    #: Password for the restricted `appsmith` Postgres role. Provisioned by the
-    #: appsmith-db-role compose service; Appsmith never uses the app's own
-    #: write-capable credentials.
-    appsmith_db_password: SecretStr | None = None
+    # --- Internal admin API ---
     #: Shared secret for /internal/* routes. The API is publicly proxied in
     #: production, so these must authenticate — an open approval endpoint would
     #: mean anyone on the internet is "a human" for the review gate.

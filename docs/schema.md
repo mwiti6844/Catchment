@@ -1,7 +1,7 @@
 # Schema
 
 Postgres + pgvector is the single source of truth. There is no separate vector
-store, and Appsmith reads these tables directly, so column names are part of
+store, and admin read models depend on these tables, so column names are part of
 the contract with the dashboard.
 
 ## ERD

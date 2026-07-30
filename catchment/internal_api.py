@@ -1,21 +1,21 @@
-"""Internal routes for the Appsmith dashboard.
+"""Internal routes for an administrative interface.
 
-Two things Appsmith cannot do for itself:
+Two operations require a trusted backend boundary:
 
 * **Decide a taxonomy proposal.** The decision is a compare-and-swap in
   ``TaxonomyProposalRepository._decide`` — ``UPDATE ... WHERE status='pending'
   RETURNING``. Reimplementing that as a raw query in the dashboard would drop
   the atomicity, so two reviewers racing could both believe they won. This
   wraps the repository and does nothing else.
-* **Read the RQ queue.** Appsmith has no Redis connector, and the queue lives
-  in Redis rather than Postgres.
+* **Read the RQ queue.** The queue lives in Redis rather than Postgres and is
+  exposed here as a small, stable read model for an admin client.
 
 **These routes authenticate.** ``api`` is reverse-proxied to the internet in
 production, so an unauthenticated approval endpoint would put the taxonomy
 review gate — "a human approves before the merge runs" — behind nothing at all.
-Callers present ``X-Internal-Token``; Caddy additionally refuses ``/internal/*``
-from outside, and Appsmith reaches the API directly over the compose network so
-it never traverses the proxy.
+Callers present ``X-Internal-Token``; Caddy additionally refuses
+``/internal/*`` from outside. A future admin client must reach the API through
+a private network path so it never traverses the public proxy.
 
 No route here returns ingested content.
 """

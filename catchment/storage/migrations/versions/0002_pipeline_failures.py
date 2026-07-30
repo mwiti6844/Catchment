@@ -1,4 +1,4 @@
-"""Pipeline failures: the dead-letter view for the Appsmith review queue.
+"""Pipeline failures: the dead-letter view for the admin review queue.
 
 Revision ID: 0002
 Revises: 0001

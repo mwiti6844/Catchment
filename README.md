@@ -3,7 +3,7 @@
 Personal content-intelligence pipeline. Ingests from WhatsApp, X bookmarks,
 Substack RSS and email (IMAP); extracts text, transcripts and OCR; classifies
 into a dynamic, self-growing tag graph; stores everything in Postgres +
-pgvector. Surfaced through an Appsmith dashboard, a recommender, and a
+pgvector. Surfaced through an admin interface, a recommender, and a
 gpt-researcher-based deep researcher.
 
 ## Setup
@@ -100,7 +100,7 @@ WhatsApp webhook ──verify HMAC──> items ──RQ job──> extractions 
 
 Concretely: forward yourself a WhatsApp message and it becomes an `items` row,
 an `extractions` row (via the passthrough extractor, since a text message
-arrives as text), and an `unclassified` entry in the Appsmith review queue.
+arrives as text), and an `unclassified` entry in the review queue.
 
 The **IMAP connector** is implemented too (`ingestion/email_imap.py`) but not
 yet scheduled — it produces `RawRecord`s on demand and has no poller job behind
@@ -157,33 +157,14 @@ Both `--env-file` flags matter too: they control Compose-time `${...}`
 interpolation, so dropping one lets `${VAR:-default}` variables silently fall
 back to defaults that may disagree with `.env`.
 
-## Admin dashboard (Appsmith)
+## Admin interface
 
-Six pages — Inbox, Item detail, Tags, Failures, Review, Queue — reading
-Postgres directly, plus two authenticated REST routes for the things SQL cannot
-do (see `catchment/admin/`).
-
-```bash
-docker compose up -d appsmith        # http://localhost:8080
-```
-
-**It is bound to `127.0.0.1` only, in local *and* production.** It renders real
-WhatsApp and email content, so unlike the webhook API it is never public: no
-Caddy route, no tunnel hostname, no `0.0.0.0` binding. On the VPS, reach it
-through an SSH tunnel:
-
-```bash
-ssh -L 8080:127.0.0.1:8080 deploy@<vps-ip>   # then open localhost:8080
-```
-
-Appsmith connects as a **restricted `appsmith` Postgres role** — `SELECT`
-everywhere, `UPDATE` on only the decision columns of `taxonomy_proposals` and
-`resolved_at` on `pipeline_failures`, `INSERT`/`DELETE` nowhere. The role is
-provisioned idempotently by the `appsmith-db-role` service on every start, so
-it lives in the repository rather than in someone's shell history.
-
-First-time setup and the page-by-page build spec:
-**[catchment/admin/appsmith-export/README.md](catchment/admin/appsmith-export/README.md)**.
+The admin UI is not currently implemented. The reusable read queries for
+Inbox, Item detail, Tags, Failures, and Review remain under
+[`catchment/admin/queries`](catchment/admin/queries), and the API retains
+authenticated `/internal/*` routes for atomic proposal decisions and queue
+inspection. A replacement UI must use those routes rather than duplicating
+decision logic in the browser.
 
 ## Tracing (Langfuse)
 
@@ -241,7 +222,7 @@ catchment/
   classification/  # embedding + dynamic tag assignment/creation
   storage/         # models, repositories, Alembic migrations
   agents/          # deep researcher, recommender
-  admin/           # Appsmith exports — not app code
+  admin/           # admin queries and operator documentation
   tests/
 docs/
   schema.md        # ERD and column-level rationale

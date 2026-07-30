@@ -75,7 +75,7 @@ proposals.propose_merge(
 )
 ```
 
-Nothing else happens. The row lands `pending`, the Appsmith review page lists
+Nothing else happens. The row lands `pending`, the admin review surface lists
 it, and a human approves or rejects with their identity recorded.
 
 ### The lifecycle

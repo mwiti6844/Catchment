@@ -3,14 +3,15 @@
 Personal content-intelligence pipeline. Ingests from WhatsApp, X bookmarks,
 Substack RSS, and email (IMAP); extracts text/transcripts/OCR; classifies into
 a *dynamic*, self-growing tag graph (no fixed taxonomy); stores in Postgres +
-pgvector; surfaced via an Appsmith admin dashboard, a recommender, and a
+pgvector; surfaced via an admin interface, a recommender, and a
 gpt-researcher-based deep researcher.
 
 ## Stack (do not introduce alternatives without asking)
 - Python 3.12, FastAPI (webhook/API surface), RQ + Redis (async jobs)
 - Postgres + pgvector — single source of truth, no separate vector DB
 - BGE-M3 (embeddings), PaddleOCR-VL (OCR), faster-whisper (transcription)
-- Appsmith (admin UI) reads Postgres directly — do not build a custom frontend
+- Admin UI is not currently implemented; preserve the authenticated internal
+  API boundary for review decisions and queue inspection
 - Langfuse (self-hosted) for LLM/agent tracing — every LLM call goes through it
 - No n8n. Orchestration is plain Python (FastAPI + RQ), deliberately, so the
   bespoke classification logic stays testable and debuggable.
@@ -23,7 +24,7 @@ catchment/
   classification/    # embedding + dynamic tag assignment/creation
   storage/           # SQLAlchemy models, repository layer, Alembic migrations
   agents/             # deep researcher, recommender
-  admin/              # Appsmith config/exports, not app code
+  admin/              # admin query catalogue and operator documentation
   tests/
 ```
 

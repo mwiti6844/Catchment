@@ -47,8 +47,8 @@ WHERE i.id = {{item_id}};
 -- Q3 (Item detail): tags with confidence, and the Langfuse trace that produced
 --     each one. trace_id is null for rule-based assignments — a fallback has no
 --     model call to link to, which is itself the useful signal.
---     Build the URL in Appsmith:
---       {{ appsmith.store.langfuseBase }}/project/<project>/traces/{{ row.trace_id }}
+--     A UI can build:
+--       <langfuse-base>/project/<project>/traces/<trace_id>
 SELECT t.label, t.slug, t.origin, it.confidence, it.assigned_by,
        it.trace_id, it.created_at
 FROM item_tags it

@@ -242,7 +242,7 @@ class PipelineFailure(Base):
     failing the job, which keeps ingestion resilient but makes the failure
     invisible: nothing in Postgres distinguishes "no text to classify" from
     "the classifier errored". RQ's own failed-job registry lives in Redis,
-    which Appsmith cannot read. This table is the dead-letter view.
+    which an admin client cannot read directly. This table is the dead-letter view.
 
     ``detail`` holds an exception class name or an HTTP status — never a
     provider message, which can quote the submitted content.
