@@ -21,7 +21,7 @@ from catchment.ingestion.email_imap import ImapError, build_connector
 from catchment.jobs.queue import get_pipeline_queue
 from catchment.logging_config import configure_logging, get_logger, log_context
 from catchment.storage.db import dispose_engine, session_scope
-from catchment.storage.repositories import ItemRepository
+from catchment.storage.repositories import ConnectorHealthRepository, ItemRepository
 
 logger = get_logger(__name__)
 
@@ -47,10 +47,28 @@ def poll_source(connector: Connector, queue: TaskQueue) -> PollSummary:
     ``(source, source_id)`` absorbs repeats, and only genuinely new rows get a
     job.
     """
-    records = list(connector.fetch())
+    try:
+        records = list(connector.fetch())
+    except Exception as error:
+        # Record the failure before re-raising: a connector that cannot even
+        # fetch is exactly what connector health exists to surface, and the
+        # exception itself may never be seen by a human.
+        with session_scope() as session:
+            ConnectorHealthRepository(session).record(
+                source=connector.source,
+                outcome="failure",
+                detail=type(error).__name__,
+            )
+        raise
 
     with session_scope() as session:
         summary = ingest_records(records, ItemRepository(session))
+        ConnectorHealthRepository(session).record(
+            source=connector.source,
+            outcome="success",
+            items_seen=summary.seen,
+            items_created=summary.created,
+        )
     # Outside the block, so the insert is committed and visible before any
     # worker can claim a job referencing it.
 

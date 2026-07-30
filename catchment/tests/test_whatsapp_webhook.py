@@ -113,6 +113,7 @@ class FakeUnitOfWork:
     def __init__(self, items: FakeItemRepository, events: list[str]) -> None:
         self.items = items
         self.events = events
+        self.session = object()
 
     def commit(self) -> None:
         self.events.append("commit")
@@ -134,10 +135,32 @@ def queue(events: list[str]) -> FakeQueue:
     return FakeQueue(events)
 
 
+class FakeHealth:
+    def __init__(self) -> None:
+        self.records: list[dict[str, Any]] = []
+
+    def record(self, **kwargs: Any) -> Any:
+        self.records.append(kwargs)
+        return SimpleNamespace(source=kwargs["source"])
+
+
+@pytest.fixture
+def health() -> FakeHealth:
+    return FakeHealth()
+
+
 @pytest.fixture
 def client(
-    repo: FakeItemRepository, queue: FakeQueue, events: list[str]
+    repo: FakeItemRepository,
+    queue: FakeQueue,
+    events: list[str],
+    health: FakeHealth,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> Iterator[TestClient]:
+    monkeypatch.setattr(
+        "catchment.ingestion.whatsapp.ConnectorHealthRepository",
+        lambda _session: health,
+    )
     app = create_app()
     app.dependency_overrides[get_ingestion_unit_of_work] = lambda: FakeUnitOfWork(
         repo, events

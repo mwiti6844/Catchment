@@ -30,6 +30,7 @@ from catchment.dependencies import (
 )
 from catchment.ingestion.base import RawRecord
 from catchment.logging_config import get_logger, log_context
+from catchment.storage.repositories import ConnectorHealthRepository
 
 logger = get_logger(__name__)
 
@@ -275,6 +276,17 @@ async def receive_webhook(
         # message costs one insert that does nothing.
         if created:
             pending.append((str(item.id), parsed.text))
+
+    # Liveness, not item freshness: a Meta retry of an already-ingested message
+    # and a status receipt both create no item, yet both prove delivery is
+    # working. Recording here is what lets a dead connector be distinguished
+    # from a quiet week.
+    ConnectorHealthRepository(work.session).record(
+        source=SOURCE,
+        outcome="success",
+        items_seen=len(messages) + skipped,
+        items_created=len(pending),
+    )
 
     # Commit before enqueuing. A worker that claims the job while this
     # transaction is still open would not find the row it was handed.

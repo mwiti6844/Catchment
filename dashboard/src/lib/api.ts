@@ -1,0 +1,99 @@
+// All calls go to /internal on the same origin. Vite proxies that to the
+// loopback-bound internal API in development; in a built deployment the same
+// path is served behind the same loopback binding. The token is injected by
+// the proxy, so it never reaches client-side JavaScript.
+
+export type ItemSummary = {
+  id: string; source: string; kind: string; author: string | null;
+  ingested_at: string; extracted_chars: number | null;
+  has_embedding: boolean; status: string; tag_count: number;
+};
+export type ItemPage = { items: ItemSummary[]; total: number; limit: number; offset: number };
+export type ItemTagView = {
+  label: string; slug: string; origin: string; confidence: number;
+  assigned_by: string; trace_id: string | null;
+};
+export type ItemDetail = {
+  id: string; source: string; source_id: string; kind: string;
+  author: string | null; url: string | null; published_at: string | null;
+  ingested_at: string; text: string | null; extractor: string | null;
+  language: string | null; has_embedding: boolean;
+  embedding_model: string | null; tags: ItemTagView[];
+};
+export type SearchHit = {
+  item_id: string; score: number; route: string; distance: number | null;
+  graph_depth: number | null; matched_tags: number | null;
+  source: string; author: string | null; ingested_at: string;
+  preview_chars: number | null;
+};
+export type SearchResponse = {
+  query_chars: number; seed_count: number; expanded_count: number;
+  tags_walked: number; hits: SearchHit[];
+};
+export type Proposal = {
+  id: string; kind: string; rationale: string | null;
+  proposed_by: string; created_at: string; payload: Record<string, unknown>;
+};
+export type Failure = {
+  id: string; item_id: string; stage: string; error_type: string;
+  detail: string | null; occurred_at: string;
+};
+export type Connector = {
+  source: string; last_success_at: string | null; last_attempt_at: string;
+  last_outcome: string; detail: string | null; items_seen: number;
+  items_created: number; stale: boolean; stale_after_seconds: number;
+};
+export type QueueCounts = {
+  queue: string; pending: number; started: number; finished: number;
+  failed: number; deferred: number; scheduled: number;
+  oldest_pending_seconds: number | null;
+};
+
+export class ApiError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+  }
+}
+
+async function get<T>(path: string): Promise<T> {
+  const response = await fetch(`/internal${path}`, {
+    headers: { Accept: "application/json" },
+  });
+  if (!response.ok) {
+    // Surface the status; the body may carry a detail worth reading, but never
+    // assume it is JSON — a proxy error page is HTML.
+    let detail = response.statusText;
+    try {
+      detail = (await response.json()).detail ?? detail;
+    } catch {
+      /* keep statusText */
+    }
+    throw new ApiError(response.status, detail);
+  }
+  return response.json() as Promise<T>;
+}
+
+export const api = {
+  items: (params: { source?: string; status?: string; limit?: number } = {}) => {
+    const query = new URLSearchParams();
+    if (params.source) query.set("source", params.source);
+    if (params.status) query.set("status", params.status);
+    query.set("limit", String(params.limit ?? 50));
+    return get<ItemPage>(`/items?${query}`);
+  },
+  item: (id: string) => get<ItemDetail>(`/items/${id}`),
+  search: (q: string) => get<SearchResponse>(`/search?q=${encodeURIComponent(q)}`),
+  proposals: () => get<Proposal[]>("/proposals"),
+  failures: () => get<Failure[]>("/failures"),
+  connectors: () => get<Connector[]>("/connectors/health"),
+  queue: () => get<QueueCounts>("/queue"),
+  decide: async (id: string, decision: "approve" | "reject", reviewer: string) => {
+    const response = await fetch(`/internal/proposals/${id}/decision`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ decision, reviewer }),
+    });
+    if (!response.ok) throw new ApiError(response.status, await response.text());
+    return response.json();
+  },
+};

@@ -84,6 +84,7 @@ def test_expected_tables_are_registered() -> None:
         "item_tags",
         "taxonomy_proposals",
         "pipeline_failures",
+        "connector_health",
     }
 
 

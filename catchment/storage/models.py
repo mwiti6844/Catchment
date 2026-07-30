@@ -41,6 +41,10 @@ PROPOSAL_KINDS: Final[tuple[str, ...]] = ("merge", "split")
 PROPOSAL_STATUSES: Final[tuple[str, ...]] = ("pending", "approved", "rejected", "applied")
 PIPELINE_STAGES: Final[tuple[str, ...]] = ("extraction", "embedding", "classification")
 
+#: How a connector last reported in. A webhook source "polls" only in the sense
+#: that a verified delivery arrived.
+CONNECTOR_OUTCOMES: Final[tuple[str, ...]] = ("success", "failure")
+
 
 def _in_set(column: str, values: tuple[str, ...]) -> str:
     rendered = ", ".join(f"'{value}'" for value in values)
@@ -266,6 +270,38 @@ class PipelineFailure(Base):
         CheckConstraint(_in_set("stage", PIPELINE_STAGES), name="ck_failures_stage"),
         Index("ix_failures_open", "resolved_at", "occurred_at"),
         Index("ix_failures_item_id", "item_id"),
+    )
+
+
+class ConnectorHealth(Base):
+    """Last time each source reported in, and how it went.
+
+    Item freshness cannot answer "is this connector alive?": a quiet week and a
+    dead poller look identical, and a duplicate or status-only WhatsApp
+    delivery is a *healthy* round trip that creates no item. This records the
+    round trip itself.
+
+    One row per source, updated in place — the history that matters is in
+    ``pipeline_failures``; this is a liveness signal.
+    """
+
+    __tablename__ = "connector_health"
+
+    source: Mapped[str] = mapped_column(String(32), primary_key=True)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_attempt_at: Mapped[datetime] = _created_at()
+    last_outcome: Mapped[str] = mapped_column(String(16), nullable=False)
+    #: Error class on failure. Never a provider message — those quote content.
+    detail: Mapped[str | None] = mapped_column(String(128))
+    #: Counts only, never content.
+    items_seen: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    items_created: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    __table_args__ = (
+        CheckConstraint(_in_set("source", SOURCES), name="ck_health_source"),
+        CheckConstraint(
+            _in_set("last_outcome", CONNECTOR_OUTCOMES), name="ck_health_outcome"
+        ),
     )
 
 

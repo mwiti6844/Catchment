@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 from catchment.config import TAG_DEPTH_HARD_CEILING
 from catchment.logging_config import get_logger, log_context
 from catchment.storage.models import (
+    ConnectorHealth,
     Embedding,
     Extraction,
     Item,
@@ -331,6 +332,41 @@ class TagRepository:
         )
         return list(self._session.execute(stmt).scalars())
 
+    def tag_ids_for_items(self, item_ids: Sequence[uuid.UUID]) -> list[uuid.UUID]:
+        """Return the distinct active tag ids applied to ``item_ids``."""
+        if not item_ids:
+            return []
+        stmt = (
+            select(Tag.id)
+            .join(ItemTag, ItemTag.tag_id == Tag.id)
+            .where(and_(ItemTag.item_id.in_(list(item_ids)), Tag.status == "active"))
+            .distinct()
+        )
+        return list(self._session.execute(stmt).scalars())
+
+    def item_tag_pairs(
+        self,
+        tag_ids: Sequence[uuid.UUID],
+        *,
+        exclude: Sequence[uuid.UUID] = (),
+        limit: int = 500,
+    ) -> list[tuple[uuid.UUID, uuid.UUID]]:
+        """Return ``(item_id, tag_id)`` for items carrying any of ``tag_ids``.
+
+        Pairs rather than aggregates: the caller needs both how many reached
+        tags an item carries *and* how far away the nearest of them was, and
+        the graph distances live in Python, not in this table.
+        """
+        if not tag_ids:
+            return []
+
+        stmt = select(ItemTag.item_id, ItemTag.tag_id).where(
+            ItemTag.tag_id.in_(list(tag_ids))
+        )
+        if exclude:
+            stmt = stmt.where(ItemTag.item_id.notin_(list(exclude)))
+        return [(row[0], row[1]) for row in self._session.execute(stmt.limit(limit)).all()]
+
     def existing_slugs(self, slugs: Sequence[str]) -> set[str]:
         """Return which of ``slugs`` already exist, regardless of status.
 
@@ -373,6 +409,73 @@ class TagRepository:
             )
         )
         self._session.execute(stmt)
+
+
+# --------------------------------------------------------------------------- #
+# Connector liveness
+# --------------------------------------------------------------------------- #
+
+
+class ConnectorHealthRepository:
+    """Records that a source reported in, successfully or not."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def record(
+        self,
+        *,
+        source: str,
+        outcome: str = "success",
+        items_seen: int = 0,
+        items_created: int = 0,
+        detail: str | None = None,
+    ) -> ConnectorHealth:
+        """Upsert one source's liveness row.
+
+        ``last_success_at`` only advances on success, so a connector that
+        starts failing keeps showing when it last actually worked — which is
+        the number you need to judge how long it has been broken.
+        """
+        now = _now()
+        values: dict[str, Any] = {
+            "source": source,
+            "last_attempt_at": now,
+            "last_outcome": outcome,
+            "detail": detail,
+            "items_seen": items_seen,
+            "items_created": items_created,
+        }
+        if outcome == "success":
+            values["last_success_at"] = now
+
+        update_on_conflict = {
+            k: v for k, v in values.items() if k != "source"
+        }
+        if outcome != "success":
+            update_on_conflict.pop("last_success_at", None)
+
+        stmt = (
+            pg_insert(ConnectorHealth)
+            .values(**values)
+            .on_conflict_do_update(
+                index_elements=[ConnectorHealth.source], set_=update_on_conflict
+            )
+            .returning(ConnectorHealth.source)
+        )
+        self._session.execute(stmt)
+        logger.info(
+            "connector reported in",
+            extra=log_context(
+                source=source, outcome=outcome, seen=items_seen, created=items_created
+            ),
+        )
+        return self._session.get_one(ConnectorHealth, source)
+
+    def list_all(self) -> list[ConnectorHealth]:
+        """Every source that has ever reported in, alphabetically."""
+        stmt = select(ConnectorHealth).order_by(ConnectorHealth.source)
+        return list(self._session.execute(stmt).scalars())
 
 
 # --------------------------------------------------------------------------- #

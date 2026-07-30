@@ -127,6 +127,24 @@ services:
         condition: service_healthy
     restart: "no"
 
+  # Dashboard API. Serves item text, so it is bound to loopback ONLY — never
+  # 0.0.0.0, no Caddy route, no tunnel hostname. The public `api` service does
+  # not mount /internal/* at all, so this is the only process that can serve it.
+  internal-api:
+    <<: *app
+    command:
+      - uvicorn
+      - catchment.internal_app:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8002"
+    ports:
+      - "127.0.0.1:${INTERNAL_API_PORT:-8002}:8002"
+    restart: unless-stopped
+    healthcheck:
+      disable: true
+
   api:
     <<: *app
     ports:

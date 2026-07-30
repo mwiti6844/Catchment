@@ -35,3 +35,7 @@ htmlcov/
 # Hosting linkage from the abandoned OpenAI Sites attempt. The privacy site is
 # published from the gh-pages branch instead.
 .openai/
+
+# Dashboard build artefacts
+dashboard/node_modules/
+dashboard/dist/

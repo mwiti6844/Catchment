@@ -62,9 +62,28 @@ def events() -> list[str]:
     return []
 
 
+class FakeHealth:
+    """Records connector liveness the way the real repository would."""
+
+    def __init__(self) -> None:
+        self.records: list[dict[str, Any]] = []
+
+    def record(self, **kwargs: Any) -> Any:
+        self.records.append(kwargs)
+        return SimpleNamespace(source=kwargs["source"])
+
+
+@pytest.fixture
+def health() -> FakeHealth:
+    return FakeHealth()
+
+
 @pytest.fixture
 def wired(
-    monkeypatch: pytest.MonkeyPatch, repo: FakeItemRepository, events: list[str]
+    monkeypatch: pytest.MonkeyPatch,
+    repo: FakeItemRepository,
+    events: list[str],
+    health: FakeHealth,
 ) -> None:
     """Swap the transaction boundary for a fake that logs when it commits."""
     from contextlib import contextmanager
@@ -76,6 +95,9 @@ def wired(
 
     monkeypatch.setattr(polling, "session_scope", fake_scope)
     monkeypatch.setattr(polling, "ItemRepository", lambda _session: repo)
+    monkeypatch.setattr(
+        polling, "ConnectorHealthRepository", lambda _session: health
+    )
 
 
 def record(source_id: str, source: str = "email") -> RawRecord:

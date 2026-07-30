@@ -15,8 +15,8 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from catchment.api import create_app
 from catchment.internal_api import QueueCounts, read_queue_counts, require_internal_token
+from catchment.internal_app import create_internal_app
 
 TOKEN = "internal-token-for-tests"
 PROPOSAL_ID = uuid.uuid4()
@@ -105,7 +105,7 @@ def client(
     monkeypatch.setattr(
         "catchment.internal_api.TaxonomyProposalRepository", lambda _s: proposals
     )
-    yield TestClient(create_app())
+    yield TestClient(create_internal_app())
 
 
 def decide(client: TestClient, **body: Any) -> Any:
@@ -148,7 +148,7 @@ def test_unconfigured_token_disables_the_routes_rather_than_opening_them(
 ) -> None:
     """Fail closed: a half-configured deployment must not expose the gate."""
     monkeypatch.delenv("CATCHMENT_INTERNAL_API_TOKEN", raising=False)
-    unconfigured = TestClient(create_app())
+    unconfigured = TestClient(create_internal_app())
 
     response = unconfigured.post(
         f"/internal/proposals/{PROPOSAL_ID}/decision",
@@ -282,3 +282,182 @@ def test_queue_response_carries_no_job_payloads() -> None:
     """Job arguments carry message text; only counts may leave this route."""
     fields = set(QueueCounts.model_fields)
     assert not {"jobs", "args", "text", "payload", "description"} & fields
+
+
+# --------------------------------------------------------------------------- #
+# Search wrapper
+# --------------------------------------------------------------------------- #
+
+
+class FakeSearchResult:
+    def __init__(self, hits: list[Any]) -> None:
+        self.hits = hits
+        self.seed_count = sum(1 for h in hits if h.route == "seed")
+        self.expanded_count = sum(1 for h in hits if h.route == "expanded")
+        self.tags_walked = 3
+
+
+def hit(item_id: uuid.UUID, route: str = "seed") -> Any:
+    return SimpleNamespace(
+        item_id=item_id,
+        score=0.9 if route == "seed" else 0.2,
+        route=route,
+        distance=0.1 if route == "seed" else None,
+        graph_depth=None if route == "seed" else 1,
+        matched_tags=None if route == "seed" else 2,
+    )
+
+
+@pytest.fixture
+def search_client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
+    monkeypatch.setenv("CATCHMENT_INTERNAL_API_TOKEN", TOKEN)
+    item_id = uuid.uuid4()
+
+    class _Scope:
+        def __enter__(self) -> object:
+            return SimpleNamespace(
+                execute=lambda *a, **k: SimpleNamespace(
+                    all=lambda: [],
+                    scalars=lambda: SimpleNamespace(all=lambda: []),
+                )
+            )
+
+        def __exit__(self, *exc: Any) -> None:
+            return None
+
+    monkeypatch.setattr("catchment.internal_api.session_scope", lambda *a, **k: _Scope())
+    monkeypatch.setattr("catchment.internal_api.ItemRepository", lambda _s: object())
+    monkeypatch.setattr("catchment.internal_api.TagRepository", lambda _s: object())
+    monkeypatch.setattr("catchment.internal_api.get_embedder", lambda *a, **k: object())
+    monkeypatch.setattr(
+        "catchment.retrieval.search", lambda *a, **k: FakeSearchResult([hit(item_id)])
+    )
+    yield TestClient(create_internal_app())
+
+
+def test_search_requires_a_token(search_client: TestClient) -> None:
+    assert search_client.get("/internal/search?q=hydrology").status_code == 403
+
+
+def test_search_rejects_an_empty_query(search_client: TestClient) -> None:
+    """Embedding whitespace would return whatever is nearest to nothing."""
+    response = search_client.get(
+        "/internal/search?q=", headers={"X-Internal-Token": TOKEN}
+    )
+    assert response.status_code == 422
+
+
+def test_search_delegates_rather_than_reimplementing(
+    search_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The endpoint must call retrieval, not do vector maths of its own."""
+    called: list[str] = []
+
+    def spy(query: str, **kwargs: Any) -> Any:
+        called.append(query)
+        return FakeSearchResult([])
+
+    monkeypatch.setattr("catchment.retrieval.search", spy)
+
+    response = search_client.get(
+        "/internal/search?q=hydrology", headers={"X-Internal-Token": TOKEN}
+    )
+
+    assert response.status_code == 200
+    assert called == ["hydrology"]
+
+
+def test_search_reports_embedder_outage_as_503(
+    search_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from catchment.classification.embeddings import EmbeddingUnavailable
+
+    def explode(*a: Any, **k: Any) -> Any:
+        raise EmbeddingUnavailable("down")
+
+    monkeypatch.setattr("catchment.retrieval.search", explode)
+
+    response = search_client.get(
+        "/internal/search?q=x", headers={"X-Internal-Token": TOKEN}
+    )
+    assert response.status_code == 503
+
+
+def test_search_response_carries_no_item_text() -> None:
+    """Search results are a list view — text belongs on Item detail only."""
+    from catchment.internal_api import SearchHitView
+
+    assert "text" not in SearchHitView.model_fields
+    assert "preview_chars" in SearchHitView.model_fields
+
+
+# --------------------------------------------------------------------------- #
+# Connector health
+# --------------------------------------------------------------------------- #
+
+
+def test_staleness_thresholds_differ_by_cadence() -> None:
+    """WhatsApp is webhook-driven and irregular; IMAP is polled."""
+    from catchment.internal_api import STALE_AFTER
+
+    assert STALE_AFTER["whatsapp"] > STALE_AFTER["email"]
+
+
+def test_a_source_that_never_succeeded_is_stale() -> None:
+    from datetime import UTC, datetime
+
+    from catchment.internal_api import _is_stale
+
+    row = SimpleNamespace(source="email", last_success_at=None)
+    assert _is_stale(row, now=datetime.now(UTC)) is True
+
+
+def test_a_recent_success_is_not_stale() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from catchment.internal_api import _is_stale
+
+    now = datetime.now(UTC)
+    row = SimpleNamespace(source="email", last_success_at=now - timedelta(minutes=5))
+    assert _is_stale(row, now=now) is False
+
+
+def test_an_old_success_is_stale() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from catchment.internal_api import _is_stale
+
+    now = datetime.now(UTC)
+    row = SimpleNamespace(source="email", last_success_at=now - timedelta(days=2))
+    assert _is_stale(row, now=now) is True
+
+
+# --------------------------------------------------------------------------- #
+# Inbox status derivation
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    ("tags", "llm", "extraction", "failures", "expected"),
+    [
+        (2, 2, True, 0, "classified"),
+        (1, 0, True, 1, "failed"),
+        (1, 0, False, 0, "nothing to classify"),
+        (1, 0, True, 0, "pending"),
+    ],
+)
+def test_classification_status_distinguishes_the_three_failure_shapes(
+    tags: int, llm: int, extraction: bool, failures: int, expected: str
+) -> None:
+    """The placeholder tag alone cannot tell these apart."""
+    from catchment.internal_api import _classification_status
+
+    assert (
+        _classification_status(
+            tag_count=tags,
+            llm_tags=llm,
+            has_extraction=extraction,
+            open_failures=failures,
+        )
+        == expected
+    )

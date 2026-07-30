@@ -1,0 +1,140 @@
+/*
+ * One motion language for the whole app.
+ *
+ * Curves are the strong custom variants — the built-in CSS easings are too
+ * weak to read as intentional. `ease-in` appears nowhere: it delays the first
+ * movement, which is the moment the user is watching most closely, so it feels
+ * sluggish at any duration.
+ */
+:root {
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+
+  --dur-press: 160ms;   /* button press feedback */
+  --dur-hover: 120ms;   /* colour changes */
+  --dur-enter: 200ms;   /* things appearing */
+
+  --bg: #0d0e10;
+  --panel: #16181c;
+  --line: #24272d;
+  --text: #e7e9ee;
+  --muted: #8b909b;
+  --accent: #7aa2f7;
+  --ok: #79c08b;
+  --warn: #e0af68;
+  --bad: #e26d75;
+
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.55 ui-sans-serif, -apple-system, "Segoe UI", sans-serif;
+}
+
+/*
+ * Navigation is used tens of times a day. Per the animation decision
+ * framework that is "remove or drastically reduce" — so routes do NOT
+ * transition. An animation here would tax every single navigation.
+ */
+
+.app { display: grid; grid-template-columns: 190px 1fr; min-height: 100vh; }
+
+.nav { border-right: 1px solid var(--line); padding: 18px 12px; }
+.nav h1 { font-size: 13px; letter-spacing: .08em; text-transform: uppercase;
+          color: var(--muted); margin: 0 0 16px 8px; }
+.nav a {
+  display: block; padding: 7px 10px; border-radius: 7px;
+  color: var(--muted); text-decoration: none;
+  /* Named properties, never `all`. */
+  transition: background-color var(--dur-hover) ease, color var(--dur-hover) ease;
+}
+.nav a:hover { background: var(--panel); color: var(--text); }
+.nav a[aria-current="page"] { background: var(--panel); color: var(--text); }
+
+.main { padding: 24px 28px; min-width: 0; }
+.head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 18px; }
+.head h2 { margin: 0; font-size: 19px; font-weight: 600; }
+.head .count { color: var(--muted); font-size: 13px; }
+
+.panel { background: var(--panel); border: 1px solid var(--line);
+         border-radius: 10px; overflow: hidden; }
+
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; font-weight: 500; color: var(--muted); font-size: 12px;
+     letter-spacing: .04em; text-transform: uppercase;
+     padding: 10px 14px; border-bottom: 1px solid var(--line); }
+td { padding: 11px 14px; border-bottom: 1px solid var(--line); }
+tr:last-child td { border-bottom: 0; }
+tbody tr { transition: background-color var(--dur-hover) ease; }
+tbody tr[data-clickable]:hover { background: #1b1e24; cursor: pointer; }
+
+.btn {
+  background: var(--panel); color: var(--text);
+  border: 1px solid var(--line); border-radius: 8px;
+  padding: 7px 13px; font: inherit; cursor: pointer;
+  /* Transform and opacity only — both composited, neither triggers layout. */
+  transition: transform var(--dur-press) var(--ease-out),
+              background-color var(--dur-hover) ease,
+              opacity var(--dur-hover) ease;
+}
+.btn:hover { background: #1e2128; }
+/* Instant, tactile confirmation the interface heard the press. */
+.btn:active { transform: scale(0.97); }
+.btn:disabled { opacity: .5; cursor: not-allowed; transform: none; }
+.btn--ok { border-color: #2f5f3f; }
+.btn--bad { border-color: #5f2f33; }
+
+.chip { display: inline-flex; align-items: center; gap: 6px;
+        border: 1px solid var(--line); border-radius: 999px;
+        padding: 2px 9px; font-size: 12px; color: var(--muted); }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+.dot--ok { background: var(--ok); } .dot--warn { background: var(--warn); }
+.dot--bad { background: var(--bad); }
+
+.muted { color: var(--muted); }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+a { color: var(--accent); }
+
+input[type="search"], input[type="text"] {
+  width: 100%; padding: 10px 13px; border-radius: 9px;
+  background: var(--panel); color: var(--text);
+  border: 1px solid var(--line); font: inherit;
+  transition: border-color var(--dur-hover) ease;
+}
+input:focus { outline: none; border-color: var(--accent); }
+
+.text { white-space: pre-wrap; line-height: 1.65; }
+
+/*
+ * Entrances start from 0.98 and fade, never from scale(0) — nothing in the
+ * real world appears from nothing. ease-out so movement begins immediately.
+ */
+@keyframes enter {
+  from { opacity: 0; transform: translateY(4px) scale(0.98); }
+  to   { opacity: 1; transform: none; }
+}
+.enter { animation: enter var(--dur-enter) var(--ease-out) both; }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+.spinner {
+  width: 15px; height: 15px; border-radius: 50%;
+  border: 2px solid var(--line); border-top-color: var(--accent);
+  /* Constant motion is the one place linear is right. Fast, because a quicker
+     spinner makes the same wait feel shorter. */
+  animation: spin 600ms linear infinite;
+}
+
+/* Honour the OS setting: motion is decoration, never the only signal. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  .btn:active { transform: none; }
+}
