@@ -45,8 +45,23 @@ slug.
 
 ## Placing a tag in the graph
 
-New tags start unparented. Edges are added when the classifier proposes a
-broader concept that already exists. The graph is a DAG by intent but not by
+The classifier returns an optional `broader_than` alongside each suggestion:
+the label of a more general tag this one belongs under. Two rules govern it,
+both about containment rather than accuracy.
+
+The proposed parent **must be a tag the model was actually shown**. Accepting
+any label the response names would let an ingested message attach a tag
+anywhere in the graph. The candidate list is the whitelist.
+
+**Edges per item are capped** (`CATCHMENT_MAX_NEW_EDGES_PER_ITEM`, default 4),
+for the same reason coinage is. The cap on edges matters more: a coined junk
+tag sits in review, while an edge changes what *retrieval* reaches for every
+item carrying those tags.
+
+`TagRepository.link_broader` refuses an edge whose parent is already reachable
+below the child — that edge would close a cycle. A refusal never costs the
+assignment that came with it: losing an edge is cheap, losing a well-earned tag
+is not. The graph is a DAG by intent but not by
 enforcement — nothing stops a sequence of individually reasonable edges from
 closing a cycle.
 
@@ -93,11 +108,29 @@ representable.
 
 ### Applying an approved merge
 
-The job that consumes approved merges must, in one transaction: repoint
-`item_tags` from the source tags to the target (keeping the higher confidence
-on collision), repoint `tag_edges`, set each source tag's `status = 'merged'`
-and `merged_into_id`, then call `mark_applied`. Source tags are retained, never
-deleted, so old assignments remain interpretable.
+`catchment/taxonomy/apply.py` consumes approved proposals. In one transaction
+it repoints `item_tags` from the source tags to the target (keeping the higher
+confidence on collision), repoints `tag_edges`, sets each source tag's
+`status = 'merged'` and `merged_into_id`, then calls `mark_applied`. Source
+tags are retained, never deleted, so old assignments remain interpretable.
+
+Repointing edges has one trap worth naming: if the target was already the
+source's parent, a blind rewrite produces `target -> target`, which a check
+constraint refuses. Those edges are dropped instead — the relationship they
+described disappears with the merge.
+
+Each proposal runs in its own savepoint, so one unapplicable proposal (a tag
+deleted since approval, a payload that no longer parses) is logged and left
+`approved` rather than stalling every proposal queued behind it.
+
+Approving through the dashboard applies the merge in the same transaction that
+records the decision. The gate is that a human decides *before* the merge runs,
+not that the two are separated in time — separating them is what left approved
+changes sitting in a queue with nothing to execute them.
+
+**Splits are not executed.** The payload names the new tags but not which items
+go where, and guessing that would be a taxonomy decision made by code. The
+executor raises rather than approximating it.
 
 ## Adding a decision path
 

@@ -2,118 +2,109 @@
 
 Everything not yet built, sequenced by dependency rather than by appeal.
 
+**Status (2026-07-30):** Phases 0, 1, 2.1 and the Substack half of Phase 4 are
+built and committed. What remains is listed below with those sections marked
+DONE; the rest stands as written.
+
 State this is written against: the ingestion spine is proven end-to-end
 (WhatsApp → item → extraction → embedding → classification → tags), traced in
 Langfuse, with a coded dashboard on a loopback-only API. What follows is
 everything else.
 
 The ordering principle throughout: **finish what is half-built before starting
-what is unbuilt.** Two features shipped in the last slices are currently inert
-for want of a small piece of upstream work, and that is the cheapest value in
-the whole document.
+what is unbuilt.** That is what Phases 0–2.1 were: two shipped features that
+were inert for want of a small piece of upstream work.
 
 ---
 
-## Phase 0 — Make what already exists actually work
+## Phase 0 — Make what already exists actually work — DONE
 
-Two gaps where the code is written and tested but has no data to act on. Both
-are small. Both unblock things already paid for.
+Two gaps where the code was written and tested but had no data to act on.
+Both are now closed. Retained here because the reasoning still explains why
+the code looks the way it does.
 
-### 0.1 Tag edge creation
+### 0.1 Tag edge creation — DONE
 
-**Problem.** `TagRepository.add_edge` is never called. The graph has
-`tags=3, tag_edges=0`. Consequences: the graph expansion in search reaches
-nothing, so retrieval currently behaves as vector-only; and a graph explorer
-would render disconnected dots.
+**The problem it solved.** `TagRepository.add_edge` had no callers. The graph
+held `tags=3, tag_edges=0`, so graph expansion in search reached nothing and
+retrieval was behaving as vector-only.
 
-**Work.** When the classifier coins a tag, ask it whether the new concept is
-narrower than an existing one, and write the edge. Extend the prompt schema
-with an optional `broader_than` / `narrower_than` field, parse it with the same
-drop-unusable-entries discipline, and call `add_edge` in
-`classification/service.py`.
+**What shipped.** The classifier returns `broader_than` alongside each
+suggestion; `classification/service.py` creates the edge. See
+`docs/taxonomy.md` for the containment rules — validated parent, per-item cap,
+cycle refusal.
 
-**Risks.** The graph is not guaranteed acyclic and traversals are already
-depth-bounded, so a bad edge degrades results rather than hanging anything.
-Cap edges per item like `max_new_tags_per_item` caps coinage — an injected item
-should not be able to rewire the taxonomy.
+### 0.2 Merge executor — DONE (splits deliberately not executed)
 
-**Done when.** A fixture covers the new decision path (per `CLAUDE.md`), an
-integration test walks a real two-level graph, and search returns at least one
-`route=expanded` hit against live data.
+**The problem it solved.** `mark_applied` had no callers, so the review queue
+was write-only: a human could approve a merge and nothing would ever act on it.
 
-### 0.2 Merge and split executor
-
-**Problem.** `mark_applied` is called nowhere outside its own definition. The
-Review page can record approvals that never take effect — the queue is
-write-only.
-
-**Work.** An RQ job consuming approved proposals. `docs/taxonomy.md` already
-specifies it: in one transaction, repoint `item_tags` to the target keeping the
-higher confidence on collision, repoint `tag_edges`, set each source tag
-`status='merged'` with `merged_into_id`, then `mark_applied`. Splits are the
-inverse and are rarer — ship merge first.
-
-**Risks.** This is the only operation that rewrites history across many items.
-It must be one transaction, and it must be idempotent, because a job retried
-after a partial failure would otherwise double-apply. Source tags are retained,
-never deleted, so old assignments stay interpretable.
-
-**Done when.** An integration test approves a proposal, runs the job, and
-asserts the item set moved, the source tag is `merged`, and re-running the job
-is a no-op.
+**What shipped.** `catchment/taxonomy/apply.py`, one savepoint per proposal,
+idempotent. Approving in the dashboard executes the merge in the same
+transaction that records the decision. Splits raise rather than approximate —
+the payload names the new tags but not which items go where, and guessing would
+be a taxonomy decision made by code.
 
 ---
 
-## Phase 1 — The media pipeline
+## Phase 1 — The media pipeline — DONE
 
-**This is the real prerequisite for all extraction, and it is not obvious.**
+**This was the real prerequisite for all extraction, and it was not obvious.**
 
-`raw_ref` is documented as "pointer to blob storage". No blob storage exists.
-For WhatsApp media, `raw_ref` holds a *Meta media ID* — a pointer into their
-API, not something any extractor can open. `Extractor.extract(raw_ref)`
-promises "the blob at raw_ref", which has never been true. Every media item so
-far has been text, so nothing has surfaced this.
+`raw_ref` was documented as "pointer to blob storage" while no blob storage
+existed. For WhatsApp media it held a *Meta media id* — a pointer into their
+API that no extractor could open — while `Extractor.extract(raw_ref)` promised
+"the blob at raw_ref". Every item so far had been text, so nothing surfaced it.
+All of Phase 2 was blocked behind this and it was on nobody's list.
 
-Nothing in Phase 2's extraction work can start until this exists.
+`raw_ref` now means one thing. Source media ids live in `meta`.
 
-### 1.1 Blob storage
+### 1.1 Blob storage — DONE
 
-**Work.** A small storage abstraction with a local-filesystem implementation
-behind it — a `BlobStore` protocol with `put(key, bytes) -> ref` and
-`open(ref)`. Filesystem is right for a personal pipeline; the protocol means
-S3/MinIO later is one implementation, not a rewrite.
+`catchment/storage/blobs.py`: a `BlobStore` protocol with a filesystem
+implementation, so S3/MinIO later is one implementation rather than a rewrite.
+Refs are `blob://<key>` and carry no absolute path — they outlive this backend.
+Writes are atomic; traversing keys are refused rather than normalised. Media
+rides on a named volume, is gitignored outside Docker, and **needs backing up
+alongside `pgdata`**.
 
-**Constraint.** Media is personal correspondence. It lives outside the database
-deliberately (`docs/schema.md`), must not enter container images, and the
-directory needs the same gitignore treatment as `.env`.
+### 1.2 WhatsApp media fetch — DONE (needs a token to run)
 
-### 1.2 WhatsApp media fetch
+`catchment/ingestion/media.py` resolves a media id through the Graph API and
+downloads the bytes. It runs inside the pipeline job, not the webhook — the
+webhook must answer Meta quickly, and the pipeline already owns a transaction
+and retry semantics. It degrades like classification does, and is idempotent
+by the `raw_ref` check.
 
-**Work.** An RQ job that resolves a Meta media ID to a download URL, fetches
-the bytes, stores them, and rewrites `raw_ref` to the blob reference.
+**Still blocked on you.** The code is built and tested, but downloading
+anything needs `CATCHMENT_WHATSAPP_ACCESS_TOKEN`, which was deliberately
+deleted from `.env` on the grounds that "inbound webhook operation does not
+require it". That was correct then and is wrong now. Until it is set, media
+items arrive and are tagged from their captions, and the skipped fetch is
+recorded in `pipeline_failures` — nothing is lost except the bytes.
 
-**Blocker to flag.** This needs `META_WHATSAPP_ACCESS_TOKEN`, which was
-deliberately deleted from `.env` on the grounds that "inbound webhook operation
-does not require it". That was correct then and is wrong for this phase —
-media download does require it. It is also a *rotating* token unless a
-permanent one is issued, so the credential story needs deciding, not just the
-value restoring.
+A short-lived user token expires in ~24h. For anything ongoing, issue a System
+User token in Meta Business Settings with `whatsapp_business_messaging` on the
+WABA; those do not expire on a timer.
 
-**Risks.** Media URLs from Meta are short-lived. Fetch must happen promptly
-after receipt or the reference expires — which argues for enqueuing the fetch
-from the webhook path, alongside the existing pipeline job.
+**Risk that remains.** Media URLs from Meta are short-lived, and the media id
+itself expires after a fixed window. If the queue backs up badly, a fetch can
+find the id already gone — that surfaces as `MediaNotAvailable` in
+`pipeline_failures` and is not retryable.
 
 ---
 
 ## Phase 2 — Real extraction
 
-Replaces the passthrough extractor. Depends entirely on Phase 1.
+Replaces the passthrough extractor. 2.2 and 2.3 depend on Phase 1, which is
+now in place.
 
-### 2.1 Article parsing (start here)
+### 2.1 Article parsing — DONE
 
-`trafilatura` over `url`, for links and Substack items. **No blob storage
-needed** — it fetches the URL directly, so this is the one extraction task that
-could ship before Phase 1 if you want early value.
+`catchment/extraction/article.py`, over `url`, for link and article items. No
+blob needed — it fetches the URL directly. The pipeline prefers article text
+over the source's own, so a forwarded link no longer classifies on "worth
+reading". A dead or paywalled link degrades to the caption.
 
 ### 2.2 OCR — PaddleOCR-VL
 
@@ -138,8 +129,9 @@ classified like any other item, end to end.
 
 ## Phase 3 — Dashboard v2
 
-Deferred from v1 on purpose. **Depends on Phase 0.1** — both features need a
-graph that has edges.
+Deferred from v1 on purpose. Depended on Phase 0.1 — both features need a graph
+that has edges. It can have them now, though the graph will stay empty until
+enough items flow through the classifier to produce real placements.
 
 ### 3.1 Tag graph explorer
 
@@ -167,7 +159,7 @@ and over-fetches freely because the unique constraint absorbs repeats.
 
 | Source | Notes |
 | --- | --- |
-| **Substack RSS** | Easiest: no auth, plain feed parsing, pairs naturally with 2.1 article parsing. Do first. |
+| **Substack RSS** | **DONE.** Any RSS or Atom feed, via `CATCHMENT_SUBSTACK_FEEDS` and `catchment-poll-substack`. Never run against a real feed yet. |
 | **IMAP** | Already built and unit-tested, never run against a real mailbox. This is a verification task, not a build. |
 | **X bookmarks** | Hardest: OAuth 2.0 with refresh, and API access tiers change. Do last, and check current API terms before starting. |
 
@@ -216,21 +208,23 @@ Designed and committed; not running.
 
 ---
 
-## Suggested order
+## What is left
 
 ```
-0.1 tag edges ──┬──> 3.1 graph explorer
-                └──> search expansion becomes real
-0.2 merge executor ──> review queue becomes useful
-2.1 article parsing (no dependencies — early value)
-1.1 blob store ──> 1.2 media fetch ──> 2.2 OCR ──> 2.3 transcription
-4 Substack ──> 4 IMAP verification ──> 4 X
-6.2 backups (do before content accumulates, not after)
-3.2 insights ──> 5 agents
+2.2 OCR ──> 2.3 transcription   (blob store and media fetch are in place)
+3.1 graph explorer ──> 3.2 insights
+4 IMAP verification ──> 4 X bookmarks
+5 recommender ──> 5 deep researcher
+6 deploy ──> 6.2 backups ──> 6.3 monitoring ──> 6.4 SSH hardening
 ```
 
-**If only one thing gets done:** Phase 0.1. It is the smallest change that
-makes two already-shipped features stop being decorative.
+**Blocked on you, not on code:**
 
-**If only one operational thing gets done:** backups. Everything else on this
-list can be rebuilt from the repository. Ingested content cannot.
+1. `CATCHMENT_WHATSAPP_ACCESS_TOKEN` — media downloads do nothing without it.
+2. The Whisper decision (2.3): local faster-whisper as `CLAUDE.md` specifies,
+   or Groq's hosted `whisper-large-v3-turbo`.
+3. GitHub Actions is locked for billing, so **CI has never run** on this
+   repository. Every check reported so far has been local.
+
+**If only one operational thing gets done:** backups. Everything else here can
+be rebuilt from the repository. Ingested content and blobs cannot.

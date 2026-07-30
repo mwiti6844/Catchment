@@ -32,7 +32,7 @@ storage behind `raw_ref`, never in Postgres.
 | --- | --- |
 | `source`, `source_id` | Identity at the origin. `UNIQUE (source, source_id)` is the deduplication mechanism — connectors may over-fetch freely, and re-ingesting is a no-op. `source_id` is 512 chars because email `Message-ID` headers get long. |
 | `kind` | Drives extractor selection (`audio` → faster-whisper, `image` → PaddleOCR-VL, `article` → parser). |
-| `raw_ref` | Pointer to blob storage. Keeps personal media out of database backups and out of anything a `SELECT *` might print. |
+| `raw_ref` | Pointer to blob storage (`blob://<key>`), set by the pipeline once bytes are actually stored — never before, or a failed download would be indistinguishable from a successful one. Keeps personal media out of database backups and out of anything a `SELECT *` might print. A *source* media id (WhatsApp's, say) is not a blob ref and lives in `meta` instead. |
 | `meta` | JSONB for source-specific fields (chat name, retweet counts, IMAP folder) that do not deserve columns. |
 
 `ingested_at` is indexed because the dashboard's default view is reverse

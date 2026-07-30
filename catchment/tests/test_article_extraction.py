@@ -174,3 +174,34 @@ def test_the_article_body_is_never_logged(caplog: pytest.LogCaptureFixture) -> N
     emitted = " ".join(r.getMessage() + str(r.__dict__) for r in caplog.records)
     assert "drainage basin collects precipitation" not in emitted
     assert "chars" in emitted
+
+
+def test_the_status_code_survives_into_the_error() -> None:
+    """"HTTP 403" and "HTTP 404" are different problems — one is a blocked user
+    agent, the other a dead link. Without the code they look identical in the
+    failure table."""
+    import httpx
+
+    request = httpx.Request("GET", URL)
+    response = httpx.Response(403, request=request)
+    http = FakeHttp(
+        error=httpx.HTTPStatusError("blocked", request=request, response=response)
+    )
+
+    with pytest.raises(ArticleExtractionError, match="HTTP 403"):
+        run(http)
+
+
+def test_the_url_still_never_reaches_the_error_message() -> None:
+    import httpx
+
+    request = httpx.Request("GET", f"{URL}?token=SECRET")
+    response = httpx.Response(403, request=request)
+    http = FakeHttp(
+        error=httpx.HTTPStatusError("blocked", request=request, response=response)
+    )
+
+    with pytest.raises(ArticleExtractionError) as caught:
+        run(http)
+
+    assert "SECRET" not in str(caught.value)

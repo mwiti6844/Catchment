@@ -23,6 +23,7 @@ from datetime import UTC, datetime
 from typing import Any, Final, Protocol
 from xml.etree.ElementTree import Element, ParseError
 
+from catchment.config import USER_AGENT
 from catchment.ingestion.base import RawRecord
 from catchment.logging_config import get_logger, log_context
 
@@ -260,5 +261,5 @@ def _default_http() -> Http:
     return httpx.Client(  # type: ignore[return-value]
         timeout=_TIMEOUT_SECONDS,
         follow_redirects=True,
-        headers={"User-Agent": "catchment/1.0 (+personal content pipeline)"},
+        headers={"User-Agent": USER_AGENT},
     )

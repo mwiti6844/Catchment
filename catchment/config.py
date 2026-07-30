@@ -29,6 +29,12 @@ Environment = Literal["development", "test", "production"]
 # configuration. No query may exceed this, even if misconfigured.
 TAG_DEPTH_HARD_CEILING = 32
 
+#: Sent by every outbound fetch (articles, feeds). The contact URL is not
+#: decoration: Wikipedia and a number of other sites return 403 to a
+#: user agent that does not identify who to contact, and that failure looks
+#: identical to a dead link unless you go looking.
+USER_AGENT = "catchment/1.0 (+https://github.com/mwiti6844/Catchment)"
+
 
 class Settings(BaseSettings):
     """Runtime configuration, sourced from environment variables only."""

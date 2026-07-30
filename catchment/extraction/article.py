@@ -19,6 +19,7 @@ from __future__ import annotations
 from typing import Any, Final, Protocol
 from urllib.parse import urlparse
 
+from catchment.config import USER_AGENT
 from catchment.extraction import ExtractionResult
 from catchment.logging_config import get_logger, log_context
 
@@ -105,9 +106,14 @@ def _fetch(client: Http, url: str) -> str:
         response = client.get(url, timeout=_TIMEOUT_SECONDS, follow_redirects=True)
         response.raise_for_status()
     except Exception as error:
-        raise ArticleExtractionError(
-            f"could not fetch article: {type(error).__name__}"
-        ) from None
+        # The status code is carried through because it is the difference
+        # between "this site blocks us" and "this link is dead", and without it
+        # every fetch failure looks identical in the failure table. The
+        # exception's own message is not: clients embed the full URL, and a
+        # shared read-link is a credential.
+        status = getattr(getattr(error, "response", None), "status_code", None)
+        detail = f"HTTP {status}" if status else type(error).__name__
+        raise ArticleExtractionError(f"could not fetch article: {detail}") from None
 
     html = getattr(response, "text", "")
     if not isinstance(html, str) or not html.strip():
@@ -151,5 +157,5 @@ def _default_http() -> Http:
     return httpx.Client(  # type: ignore[return-value]
         timeout=_TIMEOUT_SECONDS,
         follow_redirects=True,
-        headers={"User-Agent": "catchment/1.0 (+personal content pipeline)"},
+        headers={"User-Agent": USER_AGENT},
     )
