@@ -15,12 +15,18 @@ class TagSuggestion:
     ``is_new`` records whether the classifier believes it is coining a tag;
     the repository still decides, since another item may have created the same
     slug concurrently.
+
+    ``broader_than`` is the *slug* of an existing tag this one belongs under.
+    It is already validated by the time it lands here: the parser only keeps a
+    parent the model was actually shown, so an item cannot name an arbitrary
+    tag and graft itself onto it.
     """
 
     label: str
     confidence: float
     is_new: bool = False
     description: str | None = None
+    broader_than: str | None = None
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.confidence <= 1.0:

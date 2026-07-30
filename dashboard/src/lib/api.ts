@@ -34,6 +34,13 @@ export type Proposal = {
   id: string; kind: string; rationale: string | null;
   proposed_by: string; created_at: string; payload: Record<string, unknown>;
 };
+// An approved merge executes as part of the decision, so the response reports
+// what it moved. `assignments_moved` is null for a rejection, and also when a
+// merge was approved but could not be applied — the status distinguishes them.
+export type Decision = {
+  id: string; status: string; reviewed_by: string | null;
+  reviewed_at: string | null; assignments_moved: number | null;
+};
 export type Failure = {
   id: string; item_id: string; stage: string; error_type: string;
   detail: string | null; occurred_at: string;
@@ -87,13 +94,17 @@ export const api = {
   failures: () => get<Failure[]>("/failures"),
   connectors: () => get<Connector[]>("/connectors/health"),
   queue: () => get<QueueCounts>("/queue"),
-  decide: async (id: string, decision: "approve" | "reject", reviewer: string) => {
+  decide: async (
+    id: string,
+    decision: "approve" | "reject",
+    reviewer: string,
+  ): Promise<Decision> => {
     const response = await fetch(`/internal/proposals/${id}/decision`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ decision, reviewer }),
     });
     if (!response.ok) throw new ApiError(response.status, await response.text());
-    return response.json();
+    return response.json() as Promise<Decision>;
   },
 };

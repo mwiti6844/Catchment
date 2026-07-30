@@ -105,9 +105,10 @@ def test_self_loop_is_rejected(session: Session) -> None:
     tag, _ = repo.get_or_create(slug="solo", label="Solo")
     session.flush()
 
-    repo.add_edge(parent_id=tag.id, child_id=tag.id)
+    # add_edge issues its INSERT immediately, so the constraint fires here
+    # rather than at the next flush.
     with pytest.raises(IntegrityError):
-        session.flush()
+        repo.add_edge(parent_id=tag.id, child_id=tag.id)
 
 
 def test_approval_flow_records_the_reviewer(session: Session) -> None:
@@ -146,3 +147,69 @@ def test_a_decided_proposal_cannot_be_decided_again(session: Session) -> None:
     proposals.reject(proposal.id, reviewer="david")
     with pytest.raises(Exception, match="not pending"):
         proposals.approve(proposal.id, reviewer="david")
+
+
+# --------------------------------------------------------------------------- #
+# Placing tags in the graph
+# --------------------------------------------------------------------------- #
+
+
+def _tag(session: Session, slug: str) -> Tag:
+    tag = Tag(slug=slug, label=slug.title(), origin="llm")
+    session.add(tag)
+    session.flush()
+    return tag
+
+
+def test_link_broader_creates_an_edge(session: Session) -> None:
+    tags = TagRepository(session)
+    parent, child = _tag(session, "machine-learning"), _tag(session, "rag")
+
+    assert tags.link_broader(parent_id=parent.id, child_id=child.id) is True
+    assert [ref.tag_id for ref in tags.ancestors(child.id)] == [parent.id]
+
+
+def test_link_broader_refuses_an_edge_that_would_close_a_cycle(session: Session) -> None:
+    """The graph is a DAG by intent and not by enforcement. Two individually
+    reasonable edges are all it takes to close a loop, so the second is refused."""
+    tags = TagRepository(session)
+    a, b = _tag(session, "machine-learning"), _tag(session, "rag")
+    tags.link_broader(parent_id=a.id, child_id=b.id)
+
+    assert tags.link_broader(parent_id=b.id, child_id=a.id) is False
+    assert [ref.tag_id for ref in tags.ancestors(a.id)] == []
+
+
+def test_link_broader_refuses_a_longer_cycle(session: Session) -> None:
+    tags = TagRepository(session)
+    a, b, c = _tag(session, "a"), _tag(session, "b"), _tag(session, "c")
+    tags.link_broader(parent_id=a.id, child_id=b.id)
+    tags.link_broader(parent_id=b.id, child_id=c.id)
+
+    assert tags.link_broader(parent_id=c.id, child_id=a.id) is False
+
+
+def test_link_broader_refuses_a_self_loop(session: Session) -> None:
+    tags = TagRepository(session)
+    tag = _tag(session, "solo")
+
+    assert tags.link_broader(parent_id=tag.id, child_id=tag.id) is False
+
+
+def test_link_broader_is_idempotent(session: Session) -> None:
+    tags = TagRepository(session)
+    parent, child = _tag(session, "machine-learning"), _tag(session, "rag")
+
+    assert tags.link_broader(parent_id=parent.id, child_id=child.id) is True
+    assert tags.link_broader(parent_id=parent.id, child_id=child.id) is True
+    assert len(tags.ancestors(child.id)) == 1
+
+
+def test_get_by_slug_ignores_a_merged_tag(session: Session) -> None:
+    """A merged tag must not become the parent of anything new."""
+    tags = TagRepository(session)
+    source, target = _tag(session, "ml-ops"), _tag(session, "mlops")
+    tags.merge_into(source_ids=[source.id], target_id=target.id)
+
+    assert tags.get_by_slug("ml-ops") is None
+    assert tags.get_by_slug("mlops") is not None

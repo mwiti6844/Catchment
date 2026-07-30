@@ -3,20 +3,36 @@ import { api } from "../lib/api";
 import type { Proposal } from "../lib/api";
 import { useAsync } from "../lib/useAsync";
 import { Async, ago } from "../components/ui";
+import type { Decision } from "../lib/api";
+
+/** Say what actually happened, including the case where nothing did. */
+function describe(decision: Decision): string {
+  if (decision.status === "rejected") return "Rejected. The graph is unchanged.";
+  if (decision.status === "applied") {
+    const moved = decision.assignments_moved ?? 0;
+    return `Applied — ${moved} assignment${moved === 1 ? "" : "s"} moved.`;
+  }
+  // Approved but not applied: the merge could not run. Saying "approved" alone
+  // would read as success and hide that the graph is untouched.
+  return "Approved, but the change could not be applied. See the logs.";
+}
 
 export default function Review() {
   const state = useAsync<Proposal[]>(() => api.proposals(), []);
   const [busy, setBusy] = useState<string | null>(null);
   const [reviewer, setReviewer] = useState("david");
   const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<string | null>(null);
 
   async function decide(id: string, decision: "approve" | "reject") {
     setBusy(id);
     setError(null);
+    setResult(null);
     try {
       // Goes through the API's compare-and-swap. A raw UPDATE would let two
       // reviewers both believe they won.
-      await api.decide(id, decision, reviewer);
+      const decided = await api.decide(id, decision, reviewer);
+      setResult(describe(decided));
       state.reload();
     } catch (err) {
       setError((err as Error).message);
@@ -44,6 +60,12 @@ export default function Review() {
       {error && (
         <div className="panel" style={{ padding: 14, marginBottom: 14, color: "var(--bad)" }}>
           {error}
+        </div>
+      )}
+
+      {result && (
+        <div className="panel" style={{ padding: 14, marginBottom: 14 }}>
+          {result}
         </div>
       )}
 
@@ -77,8 +99,8 @@ export default function Review() {
                   >
                     Reject
                   </button>
-                  {/* Applying a merge stays a backend job — deliberately not
-                      an action available here. */}
+                  {/* Approving executes the merge. The human decision is still
+                      the gate; it just no longer stops at recording itself. */}
                 </div>
               </div>
             ))}

@@ -89,8 +89,16 @@ def proposals() -> FakeProposals:
 
 
 @pytest.fixture
+def applied() -> list[uuid.UUID]:
+    """Proposal ids the endpoint asked to execute."""
+    return []
+
+
+@pytest.fixture
 def client(
-    proposals: FakeProposals, monkeypatch: pytest.MonkeyPatch
+    proposals: FakeProposals,
+    applied: list[uuid.UUID],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> Iterator[TestClient]:
     monkeypatch.setenv("CATCHMENT_INTERNAL_API_TOKEN", TOKEN)
 
@@ -105,7 +113,19 @@ def client(
     monkeypatch.setattr(
         "catchment.internal_api.TaxonomyProposalRepository", lambda _s: proposals
     )
+    # Executing the merge needs a real session and a real graph; that path is
+    # covered in test_taxonomy_apply_integration.py. Here we only assert the
+    # endpoint reaches for it, and only after an approval.
+    monkeypatch.setattr("catchment.internal_api.apply_proposal", _record_apply(applied))
     yield TestClient(create_internal_app())
+
+
+def _record_apply(applied: list[uuid.UUID]) -> Any:
+    def _apply(proposal_id: uuid.UUID, *, session: Any) -> Any:
+        applied.append(proposal_id)
+        return SimpleNamespace(stats=SimpleNamespace(assignments_moved=3))
+
+    return _apply
 
 
 def decide(client: TestClient, **body: Any) -> Any:
@@ -175,7 +195,7 @@ def test_token_check_is_a_dependency_on_every_internal_route() -> None:
 
 
 def test_approve_goes_through_the_repository(
-    client: TestClient, proposals: FakeProposals
+    client: TestClient, proposals: FakeProposals, applied: list[uuid.UUID]
 ) -> None:
     response = decide(client)
 
@@ -184,15 +204,19 @@ def test_approve_goes_through_the_repository(
     assert body["status"] == "approved"
     assert body["reviewed_by"] == "david"
     assert proposals.calls == [("approved", "david")]
+    assert applied == [PROPOSAL_ID], "approval must execute the merge"
+    assert body["assignments_moved"] == 3
 
 
 def test_reject_goes_through_the_repository(
-    client: TestClient, proposals: FakeProposals
+    client: TestClient, proposals: FakeProposals, applied: list[uuid.UUID]
 ) -> None:
     response = decide(client, decision="reject")
 
     assert response.json()["status"] == "rejected"
     assert proposals.calls == [("rejected", "david")]
+    assert applied == [], "a rejection must never touch the graph"
+    assert response.json()["assignments_moved"] is None
 
 
 def test_deciding_twice_is_a_conflict(client: TestClient) -> None:

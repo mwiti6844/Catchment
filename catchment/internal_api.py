@@ -50,6 +50,7 @@ from catchment.storage.repositories import (
     TagRepository,
     TaxonomyProposalRepository,
 )
+from catchment.taxonomy.apply import apply_proposal
 
 logger = get_logger(__name__)
 
@@ -108,6 +109,9 @@ class ProposalDecisionResponse(BaseModel):
     status: str
     reviewed_by: str | None
     reviewed_at: str | None
+    #: Assignments moved by executing an approved merge. Null when the decision
+    #: was a rejection, or when the change could not be applied.
+    assignments_moved: int | None = None
 
 
 @router.post(
@@ -118,10 +122,17 @@ class ProposalDecisionResponse(BaseModel):
 def decide_proposal(
     proposal_id: uuid.UUID, body: ProposalDecision
 ) -> ProposalDecisionResponse:
-    """Approve or reject a proposal via the repository's compare-and-swap.
+    """Approve or reject a proposal, executing an approved change immediately.
 
     Deciding an already-decided proposal is a 409, not a silent overwrite —
     that is the repository's guarantee surfacing, not a check added here.
+
+    An approval is applied in the same transaction that records it. The gate in
+    ``CLAUDE.md`` is that a human decides before the merge runs, not that the
+    two are separated in time; splitting them is what left approved changes
+    sitting in the queue with nothing to execute them. A merge that cannot be
+    applied leaves the proposal ``approved`` and is reported as such, rather
+    than failing the decision the reviewer just made.
     """
     with session_scope() as session:
         proposals = TaxonomyProposalRepository(session)
@@ -133,20 +144,32 @@ def decide_proposal(
         except RepositoryError as error:
             raise HTTPException(status.HTTP_409_CONFLICT, detail=str(error)) from None
 
+        applied = (
+            apply_proposal(proposal_id, session=session)
+            if body.decision == "approve"
+            else None
+        )
+
         logger.info(
             "proposal decided via dashboard",
             extra=log_context(
                 proposal_id=str(proposal_id),
                 decision=body.decision,
                 reviewer=body.reviewer,
+                applied=applied is not None,
             ),
         )
+        # No refresh needed: mark_applied mutates the same identity-mapped row
+        # this holds, so `proposal.status` already reads "applied".
         return ProposalDecisionResponse(
             id=proposal.id,
             status=proposal.status,
             reviewed_by=proposal.reviewed_by,
             reviewed_at=(
                 proposal.reviewed_at.isoformat() if proposal.reviewed_at else None
+            ),
+            assignments_moved=(
+                applied.stats.assignments_moved if applied is not None else None
             ),
         )
 

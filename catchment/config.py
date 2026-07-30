@@ -87,6 +87,12 @@ class Settings(BaseSettings):
     #: what a successful injection can do: pollute the graph with a couple of
     #: junk tags a human then sees in review, rather than flood it.
     max_new_tags_per_item: int = Field(default=2, ge=0, le=8)
+    #: How many graph edges one item may add. Same reasoning as the coinage
+    #: cap, applied to placement: an item that could re-parent the taxonomy
+    #: without bound is a more damaging injection target than one that can
+    #: coin a couple of junk tags, because edges change what *retrieval*
+    #: reaches for every other item.
+    max_new_edges_per_item: int = Field(default=4, ge=0, le=16)
 
     # --- Internal admin API ---
     #: Shared secret for /internal/* routes. The API is publicly proxied in

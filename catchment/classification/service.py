@@ -35,6 +35,8 @@ class ClassificationOutcome:
     trace_id: str | None = None
     #: New tags dropped because the item hit its coinage cap.
     capped: int = 0
+    #: Graph edges created placing a tag under a broader one.
+    linked: int = 0
 
     @property
     def discarded(self) -> int:
@@ -70,8 +72,12 @@ def classify_item(
     above_threshold = result.above(resolved.classification_threshold)
     kept, capped = _cap_new_tags(tags, above_threshold, limit=resolved.max_new_tags_per_item)
 
-    coined = _apply(
-        tags, item_id=item_id, suggestions=kept, trace_id=result.trace_id
+    coined, linked = _apply(
+        tags,
+        item_id=item_id,
+        suggestions=kept,
+        trace_id=result.trace_id,
+        max_edges=resolved.max_new_edges_per_item,
     )
 
     outcome = ClassificationOutcome(
@@ -83,6 +89,7 @@ def classify_item(
         model=result.model,
         trace_id=result.trace_id,
         capped=capped,
+        linked=linked,
     )
     logger.info(
         "classification complete",
@@ -94,6 +101,7 @@ def classify_item(
             coined=outcome.coined,
             discarded=outcome.discarded,
             capped=outcome.capped,
+            linked=outcome.linked,
             trace_id=outcome.trace_id,
         ),
     )
@@ -158,9 +166,17 @@ def _apply(
     item_id: uuid.UUID,
     suggestions: list[TagSuggestion],
     trace_id: str | None = None,
-) -> int:
-    """Create or reuse each tag and attach it. Returns how many were coined."""
+    max_edges: int,
+) -> tuple[int, int]:
+    """Create or reuse each tag, attach it, and place it in the graph.
+
+    Returns ``(coined, linked)``. Placement is deliberately subordinate to
+    assignment: an edge that cannot be created is skipped and the tag is still
+    attached. The reverse — dropping a well-earned tag because its proposed
+    parent was unusable — would lose information the classifier got right.
+    """
     coined = 0
+    linked = 0
     for suggestion in suggestions:
         tag, created = tags.get_or_create(
             slug=suggestion.slug,
@@ -176,4 +192,25 @@ def _apply(
             assigned_by="llm",
             trace_id=trace_id,
         )
-    return coined
+        if linked < max_edges and _place(tags, suggestion=suggestion, child_id=tag.id):
+            linked += 1
+    return coined, linked
+
+
+def _place(
+    tags: TagRepository, *, suggestion: TagSuggestion, child_id: uuid.UUID
+) -> bool:
+    """Link a tag under the broader one the classifier proposed, if it exists.
+
+    The parent was validated at parse time as a label the model was shown, but
+    a candidate label is not proof of a current row: the tag may have been
+    merged away between the prompt and this write.
+    """
+    if suggestion.broader_than is None:
+        return False
+
+    parent = tags.get_by_slug(suggestion.broader_than)
+    if parent is None or parent.id == child_id:
+        return False
+
+    return tags.link_broader(parent_id=parent.id, child_id=child_id)

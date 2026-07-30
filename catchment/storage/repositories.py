@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Final
 
-from sqlalchemy import Select, and_, literal, select, update
+from sqlalchemy import Select, and_, delete, func, literal, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -57,6 +57,14 @@ class TagRef:
 
     tag_id: uuid.UUID
     depth: int
+
+
+@dataclass(frozen=True, slots=True)
+class MergeStats:
+    """What one merge moved. Counts only — never labels or content."""
+
+    tags_merged: int
+    assignments_moved: int
 
 
 def _validate_depth(max_depth: int) -> int:
@@ -200,16 +208,30 @@ class ItemRepository:
     def nearest(
         self, *, vector: list[float], limit: int = 10, exclude: uuid.UUID | None = None
     ) -> list[tuple[Item, float]]:
-        """Return the ``limit`` nearest items by cosine distance."""
+        """Return the ``limit`` nearest items by cosine distance.
+
+        The nearest-neighbour search runs against ``embeddings`` alone and is
+        joined to ``items`` afterwards. Ordering a joined query by distance
+        gives the planner a second, non-vector way to produce the same rows —
+        a merge join on the primary keys followed by a sort — which it will
+        happily choose, reading and sorting *every* embedding rather than
+        touching the HNSW index. Restricting the ordered, limited scan to one
+        table is what makes the index the only sensible plan; the join then
+        handles ``limit`` rows instead of the whole table.
+        """
         distance = Embedding.vector.cosine_distance(vector).label("distance")
-        stmt = (
-            select(Item, distance)
-            .join(Embedding, Embedding.item_id == Item.id)
-            .order_by(distance)
-            .limit(limit)
-        )
+        nearest = select(Embedding.item_id.label("item_id"), distance).order_by(distance)
         if exclude is not None:
-            stmt = stmt.where(Item.id != exclude)
+            # Filtered here rather than after the join: excluding downstream
+            # would let the excluded item consume one of the `limit` slots.
+            nearest = nearest.where(Embedding.item_id != exclude)
+
+        window = nearest.limit(limit).subquery("nearest")
+        stmt = (
+            select(Item, window.c.distance)
+            .join(window, window.c.item_id == Item.id)
+            .order_by(window.c.distance)
+        )
         return [(row[0], row[1]) for row in self._session.execute(stmt).all()]
 
 
@@ -301,6 +323,44 @@ class TagRepository:
         )
         self._session.execute(stmt)
 
+    def link_broader(self, *, parent_id: uuid.UUID, child_id: uuid.UUID) -> bool:
+        """Place ``child`` under ``parent``, refusing edges that close a cycle.
+
+        The graph is a DAG by intent and not by enforcement: nothing stops a
+        sequence of individually reasonable edges from closing a loop. Every
+        traversal is depth-bounded so a cycle degrades results rather than
+        hanging, but a cycle is still wrong — an ancestor walk that comes back
+        round to where it started is not a hierarchy.
+
+        This is the one place edges are created from model output, so the check
+        lives here rather than in the caller. Returns whether the edge was
+        added; a refusal is not an error, and must not cost the caller the
+        assignment that came with it.
+        """
+        if parent_id == child_id:
+            return False
+
+        # Reachable *from* the child means the proposed parent already sits
+        # below it. Adding the edge would close the loop.
+        if any(ref.tag_id == parent_id for ref in self.descendants(child_id)):
+            logger.info(
+                "tag edge refused: would close a cycle",
+                extra=log_context(parent_id=str(parent_id), child_id=str(child_id)),
+            )
+            return False
+
+        self.add_edge(parent_id=parent_id, child_id=child_id)
+        return True
+
+    def get_by_slug(self, slug: str) -> Tag | None:
+        """Fetch an active tag by slug.
+
+        Merged tags are excluded: placing a new tag under one a human just
+        merged away would rebuild the structure the merge removed.
+        """
+        stmt = select(Tag).where(and_(Tag.slug == slug, Tag.status == "active"))
+        return self._session.execute(stmt).scalar_one_or_none()
+
     def ancestors(self, tag_id: uuid.UUID, *, max_depth: int | None = None) -> list[TagRef]:
         """Return ancestors of ``tag_id``, never walking deeper than the bound."""
         stmt = build_ancestors_stmt(tag_id, max_depth or self._max_depth)
@@ -379,6 +439,112 @@ class TagRepository:
             return set()
         stmt = select(Tag.slug).where(Tag.slug.in_(list(slugs)))
         return set(self._session.execute(stmt).scalars())
+
+    def merge_into(
+        self, *, source_ids: Sequence[uuid.UUID], target_id: uuid.UUID
+    ) -> MergeStats:
+        """Fold ``source_ids`` into ``target_id``.
+
+        The only operation in this system that rewrites existing history, which
+        is why it runs behind human approval (``docs/taxonomy.md``). It does not
+        commit: the caller owns the transaction, so a failure part-way through
+        leaves no half-merged graph.
+
+        Source tags are retained with ``status='merged'`` rather than deleted,
+        so an assignment made months ago against the old label stays
+        interpretable.
+        """
+        sources = [tag_id for tag_id in source_ids if tag_id != target_id]
+        if not sources:
+            raise ValueError("cannot merge a tag into itself")
+
+        moved = self._move_assignments(sources, target_id)
+        self._repoint_edges(sources, target_id)
+
+        self._session.execute(
+            update(Tag)
+            .where(Tag.id.in_(sources))
+            .values(status="merged", merged_into_id=target_id)
+        )
+        logger.info(
+            "tags merged",
+            extra=log_context(
+                target_id=str(target_id),
+                sources=len(sources),
+                assignments_moved=moved,
+            ),
+        )
+        return MergeStats(tags_merged=len(sources), assignments_moved=moved)
+
+    def _move_assignments(
+        self, sources: Sequence[uuid.UUID], target_id: uuid.UUID
+    ) -> int:
+        """Repoint item_tags, keeping the higher confidence on collision.
+
+        An item may carry both the source and the target. Repointing blindly
+        would violate the primary key, and taking the source's value blindly
+        would discard a stronger signal the target already had.
+        """
+        rows = self._session.execute(
+            select(ItemTag.item_id, ItemTag.confidence, ItemTag.assigned_by, ItemTag.trace_id)
+            .where(ItemTag.tag_id.in_(list(sources)))
+        ).all()
+        if not rows:
+            return 0
+
+        for item_id, confidence, assigned_by, trace_id in rows:
+            self._session.execute(
+                pg_insert(ItemTag)
+                .values(
+                    item_id=item_id,
+                    tag_id=target_id,
+                    confidence=confidence,
+                    assigned_by=assigned_by,
+                    trace_id=trace_id,
+                )
+                .on_conflict_do_update(
+                    index_elements=[ItemTag.item_id, ItemTag.tag_id],
+                    set_={"confidence": func.greatest(ItemTag.confidence, confidence)},
+                )
+            )
+
+        self._session.execute(delete(ItemTag).where(ItemTag.tag_id.in_(list(sources))))
+        return len(rows)
+
+    def _repoint_edges(self, sources: Sequence[uuid.UUID], target_id: uuid.UUID) -> None:
+        """Move the source's edges onto the target, then drop the originals.
+
+        Self-loops are the trap: if the target was already the source's parent,
+        repointing produces ``target -> target``, which a check constraint
+        refuses. Those edges are dropped rather than rewritten — the
+        relationship they described disappears with the merge.
+        """
+        source_list = list(sources)
+        edges = self._session.execute(
+            select(TagEdge.parent_id, TagEdge.child_id, TagEdge.relation).where(
+                or_(TagEdge.parent_id.in_(source_list), TagEdge.child_id.in_(source_list))
+            )
+        ).all()
+
+        for parent_id, child_id, relation in edges:
+            new_parent = target_id if parent_id in source_list else parent_id
+            new_child = target_id if child_id in source_list else child_id
+            if new_parent == new_child:
+                continue
+            self._session.execute(
+                pg_insert(TagEdge)
+                .values(parent_id=new_parent, child_id=new_child, relation=relation)
+                .on_conflict_do_nothing(index_elements=[TagEdge.parent_id, TagEdge.child_id])
+            )
+
+        self._session.execute(
+            delete(TagEdge).where(
+                or_(
+                    TagEdge.parent_id.in_(source_list),
+                    TagEdge.child_id.in_(source_list),
+                )
+            )
+        )
 
     def assign(
         self,
@@ -616,6 +782,21 @@ class TaxonomyProposalRepository:
             select(TaxonomyProposal)
             .where(TaxonomyProposal.status == "pending")
             .order_by(TaxonomyProposal.created_at)
+            .limit(limit)
+        )
+        return list(self._session.execute(stmt).scalars())
+
+    def list_approved(self, *, limit: int = 100) -> list[TaxonomyProposal]:
+        """Approved proposals awaiting execution.
+
+        Oldest first: a merge approved before another may be a prerequisite for
+        it, and applying them out of order could target a tag that the earlier
+        merge was about to fold away.
+        """
+        stmt = (
+            select(TaxonomyProposal)
+            .where(TaxonomyProposal.status == "approved")
+            .order_by(TaxonomyProposal.reviewed_at)
             .limit(limit)
         )
         return list(self._session.execute(stmt).scalars())

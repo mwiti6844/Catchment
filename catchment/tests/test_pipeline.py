@@ -12,6 +12,7 @@ import pytest
 from catchment.classification.embeddings import EmbeddingUnavailable
 from catchment.classification.placeholder import UNCLASSIFIED_SLUG, assign_unclassified
 from catchment.classification.types import ClassificationResult, TagSuggestion
+from catchment.config import MissingConfiguration
 from catchment.extraction.passthrough import PASSTHROUGH_EXTRACTOR, passthrough
 from catchment.jobs.pipeline import run_pipeline
 from catchment.llm.errors import LLMUnavailable
@@ -254,6 +255,29 @@ def test_unparseable_model_response_falls_back(
 
     assert result.classified is False
     assert tags.created[0]["slug"] == UNCLASSIFIED_SLUG
+
+
+def test_an_unconfigured_provider_falls_back_rather_than_killing_the_job(
+    items: FakeItems, tags: FakeTags
+) -> None:
+    """A missing API key is an outage like any other.
+
+    MissingConfiguration is a RuntimeError, not an LLMError, so it used to
+    escape this handler and fail the whole job — losing the item instead of
+    degrading it. A deploy that forgot a key would silently stop tagging while
+    every item still landed, which is the failure mode the fallback exists to
+    prevent.
+    """
+    result = _run(
+        items,
+        tags,
+        BODY,
+        classifier=FakeClassifier(error=MissingConfiguration("no API key")),
+    )
+
+    assert result.classified is False
+    assert tags.created[0]["slug"] == UNCLASSIFIED_SLUG
+    assert items.extractions[0]["text"] == BODY, "extraction still landed"
 
 
 def test_fallback_logs_the_failure_class_not_the_provider_message(

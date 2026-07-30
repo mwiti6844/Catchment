@@ -19,7 +19,7 @@ from catchment.classification.llm_classifier import LLMClassifier
 from catchment.classification.placeholder import assign_unclassified
 from catchment.classification.service import classify_item
 from catchment.classification.types import Classifier
-from catchment.config import Settings, get_settings
+from catchment.config import MissingConfiguration, Settings, get_settings
 from catchment.extraction.passthrough import passthrough
 from catchment.llm.errors import LLMError
 from catchment.logging_config import get_logger, log_context
@@ -133,9 +133,13 @@ def _classify(
             text=text,
             settings=settings,
         )
-    except (EmbeddingError, LLMError, ValueError) as error:
-        # ValueError covers ClassificationParseError. Log the failure class,
-        # never the provider's message — it can quote the submitted text.
+    except (EmbeddingError, LLMError, MissingConfiguration, ValueError) as error:
+        # ValueError covers ClassificationParseError. MissingConfiguration is a
+        # plain RuntimeError and used to escape here, killing the job: a deploy
+        # that forgot an API key lost items instead of degrading them. It is an
+        # outage like any other, and the failure row below is what makes it
+        # visible. Log the failure class, never the provider's message — it can
+        # quote the submitted text.
         logger.warning(
             "classification failed; falling back to unclassified",
             extra=log_context(item_id=str(item_id), error=type(error).__name__),

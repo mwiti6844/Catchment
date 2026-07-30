@@ -1,0 +1,56 @@
+{
+  "_comment": "Placement decisions: a classifier response that coins tags and proposes where each belongs under an existing one. Covers a valid placement, a placement naming a tag that was never offered (rejected), a self-placement (rejected), and a coined tag with no placement at all.",
+  "known_tags": ["Machine Learning", "Kenyan Fintech"],
+  "response": {
+    "tags": [
+      {
+        "label": "Retrieval Augmented Generation",
+        "confidence": 0.91,
+        "is_new": true,
+        "description": "Grounding model output in retrieved documents.",
+        "broader_than": "Machine Learning"
+      },
+      {
+        "label": "Mobile Money",
+        "confidence": 0.84,
+        "is_new": true,
+        "description": "Phone-based payment rails.",
+        "broader_than": "Cryptocurrency"
+      },
+      {
+        "label": "Kenyan Fintech",
+        "confidence": 0.77,
+        "is_new": false,
+        "broader_than": "Kenyan Fintech"
+      },
+      {
+        "label": "Vector Databases",
+        "confidence": 0.66,
+        "is_new": true,
+        "description": "Stores optimised for nearest-neighbour search."
+      }
+    ]
+  },
+  "expected": [
+    {
+      "slug": "retrieval-augmented-generation",
+      "broader_slug": "machine-learning",
+      "why": "names a tag that was offered as a candidate"
+    },
+    {
+      "slug": "mobile-money",
+      "broader_slug": null,
+      "why": "Cryptocurrency was never offered; an unverifiable parent is dropped"
+    },
+    {
+      "slug": "kenyan-fintech",
+      "broader_slug": null,
+      "why": "a tag cannot be broader than itself"
+    },
+    {
+      "slug": "vector-databases",
+      "broader_slug": null,
+      "why": "no placement proposed"
+    }
+  ]
+}
