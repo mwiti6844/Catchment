@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from catchment.internal_api import QueueCounts, read_queue_counts, require_internal_token
+from catchment.internal_api import QueueCounts, read_queue_counts
 from catchment.internal_app import create_internal_app
 
 TOKEN = "internal-token-for-tests"
@@ -178,15 +178,39 @@ def test_unconfigured_token_disables_the_routes_rather_than_opening_them(
     assert response.status_code == 503
 
 
-def test_token_check_is_a_dependency_on_every_internal_route() -> None:
-    """A future route added without the dependency would be publicly open."""
-    from catchment.internal_api import router
+def test_every_internal_route_refuses_an_unauthenticated_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A future route added without the dependency would be publicly open.
 
-    for route in router.routes:
-        dependencies = getattr(route, "dependencies", [])
-        assert any(
-            d.dependency is require_internal_token for d in dependencies
-        ), f"{getattr(route, 'path', route)} is missing the token dependency"
+    Asserted by *calling* every route rather than by reading its dependency
+    list. The earlier version inspected ``router.routes``, which under FastAPI's
+    lazy router inclusion holds an opaque placeholder for a nested router rather
+    than its routes — so an entire sub-router could be added and the check would
+    pass without ever having looked at it. Driving the app instead tests what
+    actually matters, and cannot be fooled by how the routers are assembled.
+    """
+    monkeypatch.setenv("CATCHMENT_INTERNAL_API_TOKEN", TOKEN)
+    app = create_internal_app()
+    unauthenticated = TestClient(app)
+
+    checked = 0
+    for path, operations in app.openapi()["paths"].items():
+        if not path.startswith("/internal"):
+            continue
+        for method in operations:
+            # Path params are filled with a syntactically valid value: an
+            # invalid one would 422 before the dependency ever ran, and the
+            # route would look protected when it is not.
+            url = path.replace("{proposal_id}", str(PROPOSAL_ID))
+            url = url.replace("{item_id}", str(uuid.uuid4()))
+            url = url.replace("{tag_id}", str(uuid.uuid4()))
+
+            response = unauthenticated.request(method.upper(), url, json={})
+            assert response.status_code == 403, f"{method.upper()} {path} is open"
+            checked += 1
+
+    assert checked >= 8, "the route sweep found suspiciously few routes"
 
 
 # --------------------------------------------------------------------------- #
@@ -484,4 +508,149 @@ def test_classification_status_distinguishes_the_three_failure_shapes(
             open_failures=failures,
         )
         == expected
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Tag graph and insights
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def graph_client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
+    """A client whose graph repository is a stand-in.
+
+    The query behaviour itself is covered against a real database in
+    test_tag_graph_integration.py; what is asserted here is the translation
+    layer — the status codes, and that a missing tag is a 404 rather than an
+    empty graph.
+    """
+    monkeypatch.setenv("CATCHMENT_INTERNAL_API_TOKEN", TOKEN)
+
+    class _Scope:
+        def __enter__(self) -> object:
+            return object()
+
+        def __exit__(self, *exc: Any) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "catchment.internal_graph_api.session_scope", lambda *a, **k: _Scope()
+    )
+    # One instance across requests: a fresh fake per call would mint a new tag
+    # id each time, so the id handed out by /tags would never match the one the
+    # graph route is asked for.
+    fake = FakeGraph()
+    monkeypatch.setattr(
+        "catchment.internal_graph_api.TagGraphRepository", lambda _s: fake
+    )
+    yield TestClient(create_internal_app())
+
+
+class FakeGraph:
+    """Mirrors the repository's contract, including returning None for a
+    missing tag rather than an empty neighbourhood."""
+
+    def __init__(self) -> None:
+        self.known = uuid.uuid4()
+
+    def _node(self, level: int, slug: str) -> Any:
+        return SimpleNamespace(
+            tag_id=self.known if level == 0 else uuid.uuid4(),
+            slug=slug,
+            label=slug.title(),
+            status="active",
+            origin="llm",
+            item_count=3,
+            level=level,
+        )
+
+    def list_tags(self, *, limit: int = 200) -> list[Any]:
+        return [
+            SimpleNamespace(
+                tag_id=self.known,
+                slug="hydrology",
+                label="Hydrology",
+                status="active",
+                origin="llm",
+                item_count=3,
+                parent_count=0,
+                child_count=1,
+            )
+        ][:limit]
+
+    def neighbourhood(self, tag_id: uuid.UUID, *, depth: int = 2) -> Any:
+        if tag_id != self.known:
+            return None
+        root = self._node(0, "hydrology")
+        return SimpleNamespace(
+            root=root,
+            depth=depth,
+            nodes=[root, self._node(1, "drainage-basin")],
+            edges=[],
+            truncated=False,
+        )
+
+
+def test_an_unknown_tag_is_a_404_not_an_empty_graph(graph_client: TestClient) -> None:
+    """An empty graph reads as 'this tag is isolated', which is a different and
+    much more interesting claim than 'this tag does not exist'."""
+    response = graph_client.get(
+        f"/internal/tags/{uuid.uuid4()}/graph", headers={"X-Internal-Token": TOKEN}
+    )
+    assert response.status_code == 404
+
+
+def test_the_graph_route_refuses_a_depth_past_the_bound(
+    graph_client: TestClient,
+) -> None:
+    """CLAUDE.md bounds recursive walks. The route must not accept a depth it
+    would then have to silently clamp."""
+    response = graph_client.get(
+        f"/internal/tags/{uuid.uuid4()}/graph?depth=99",
+        headers={"X-Internal-Token": TOKEN},
+    )
+    assert response.status_code == 422
+
+
+def test_the_graph_carries_signed_levels(graph_client: TestClient) -> None:
+    """The sign is the direction, and it is what lets the client lay tags out
+    in columns without re-deriving the hierarchy from the edge list."""
+    client = graph_client
+    known = str(
+        [row["id"] for row in client.get(
+            "/internal/tags", headers={"X-Internal-Token": TOKEN}
+        ).json()][0]
+    )
+
+    body = client.get(
+        f"/internal/tags/{known}/graph", headers={"X-Internal-Token": TOKEN}
+    ).json()
+
+    assert {node["level"] for node in body["nodes"]} == {0, 1}
+    assert body["root"]["level"] == 0
+
+
+def test_the_graph_response_carries_no_item_text() -> None:
+    """The explorer draws structure. Item content belongs to the inbox."""
+    from catchment.internal_graph_api import TagNodeView
+
+    assert not {"text", "preview", "author", "url"} & set(TagNodeView.model_fields)
+
+
+def test_the_insights_response_carries_no_item_text() -> None:
+    """Insights counts. It links to items by id; it does not restate them."""
+    from catchment.internal_insights_api import TagTrendView
+
+    fields = set(TagTrendView.model_fields)
+    assert not {"text", "title", "author", "preview", "samples"} & fields
+    assert "sample_item_ids" in fields, "counts must remain traceable to items"
+
+
+def test_insights_reports_the_window_it_used() -> None:
+    """A trend without a stated window is unfalsifiable by construction."""
+    from catchment.internal_insights_api import TrendReportView
+
+    assert {"window_start", "window_end", "prior_start"} <= set(
+        TrendReportView.model_fields
     )

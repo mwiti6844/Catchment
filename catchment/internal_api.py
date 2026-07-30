@@ -22,16 +22,17 @@ No route here returns ingested content.
 
 from __future__ import annotations
 
-import hmac
 import uuid
-from typing import Annotated, Any, Final, Literal
+from typing import Any, Final, Literal
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import and_
 
 from catchment.classification.embeddings import EmbeddingError, get_embedder
-from catchment.config import MissingConfiguration, Settings, get_settings
+from catchment.internal_auth import require_internal_token
+from catchment.internal_graph_api import router as graph_router
+from catchment.internal_insights_api import router as insights_router
 from catchment.logging_config import get_logger, log_context
 from catchment.storage.db import session_scope
 from catchment.storage.models import (
@@ -55,30 +56,6 @@ from catchment.taxonomy.apply import apply_proposal
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/internal", tags=["internal"])
-
-
-def require_internal_token(
-    x_internal_token: Annotated[str | None, Header()] = None,
-    settings: Settings = Depends(get_settings),
-) -> None:
-    """Reject anything without the shared secret.
-
-    Fails closed: if no token is configured the routes are unavailable rather
-    than open, so a half-configured deployment cannot expose the review gate.
-    """
-    try:
-        expected = settings.require_internal_token()
-    except MissingConfiguration:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="internal routes are not configured",
-        ) from None
-
-    if x_internal_token is None or not hmac.compare_digest(
-        x_internal_token, expected.get_secret_value()
-    ):
-        logger.warning("internal route rejected: bad or missing token")
-        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="forbidden")
 
 
 class ProposalDecision(BaseModel):
@@ -663,3 +640,15 @@ def _is_stale(row: Any, *, now: Any) -> bool:
     threshold = STALE_AFTER.get(row.source, DEFAULT_STALE_AFTER)
     elapsed: float = (now - row.last_success_at).total_seconds()
     return elapsed > threshold
+
+
+# --------------------------------------------------------------------------- #
+# Routers split into their own modules
+# --------------------------------------------------------------------------- #
+#
+# Mounted here rather than on the app so they inherit this router's prefix and
+# are covered by the test asserting every internal route carries the token
+# dependency. A router mounted directly on the app would bypass that check.
+
+router.include_router(graph_router)
+router.include_router(insights_router)

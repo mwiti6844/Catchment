@@ -129,6 +129,58 @@ input:focus { outline: none; border-color: var(--accent); }
   animation: spin 600ms linear infinite;
 }
 
+/* --- Tag graph explorer --------------------------------------------------- */
+
+.explorer { display: grid; grid-template-columns: 240px 1fr; gap: 18px;
+            align-items: start; min-width: 0; }
+.explorer__list { max-height: calc(100vh - 130px); overflow-y: auto; }
+.explorer__controls { display: flex; align-items: center; gap: 8px;
+                      margin-bottom: 12px; flex-wrap: wrap; }
+
+.taglist { list-style: none; margin: 0; padding: 0; }
+.taglist__row {
+  display: flex; justify-content: space-between; gap: 10px; width: 100%;
+  padding: 8px 14px; background: none; border: 0; border-bottom: 1px solid var(--line);
+  color: var(--text); font: inherit; text-align: left; cursor: pointer;
+  transition: background-color var(--dur-hover) ease;
+}
+.taglist__row:hover { background: #1b1e24; }
+.taglist__row.is-active { background: #1e2128; color: var(--accent); }
+.taglist__label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* The diagram scrolls inside its own panel; the page itself never scrolls
+   sideways, which would move the navigation off screen. */
+.graph { overflow-x: auto; padding: 4px; }
+.graph__footer { padding: 10px 14px; border-top: 1px solid var(--line); font-size: 12px; }
+
+.graph__edge { fill: none; stroke: var(--line); stroke-width: 1.5; }
+/* Sibling and upward edges are dashed: they break the left-to-right reading,
+   so they should look like the exception they are. */
+.graph__edge--back { stroke-dasharray: 4 3; }
+
+.graph__box { fill: #1b1e24; stroke: var(--line); stroke-width: 1;
+              transition: fill var(--dur-hover) ease, stroke var(--dur-hover) ease; }
+.graph__node { cursor: pointer; }
+.graph__node:hover .graph__box { fill: #23262e; stroke: var(--accent); }
+.graph__node:focus { outline: none; }
+.graph__node:focus-visible .graph__box { stroke: var(--accent); stroke-width: 2; }
+.graph__box--root { stroke: var(--accent); }
+.graph__box--faded { opacity: .55; stroke-dasharray: 3 3; }
+
+.graph__label { fill: var(--text); font-size: 13px; }
+.graph__meta { fill: var(--muted); font-size: 11px;
+               font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.graph__axis { fill: var(--muted); font-size: 11px; letter-spacing: .04em;
+               text-transform: uppercase; }
+
+/* --- Insights ------------------------------------------------------------- */
+
+.bar { position: relative; display: flex; align-items: center; gap: 8px;
+       background: #1b1e24; border-radius: 5px; height: 20px; }
+.bar__fill { height: 100%; background: var(--accent); opacity: .55;
+             border-radius: 5px; min-width: 2px; }
+.bar__value { position: absolute; right: 8px; color: var(--text); }
+
 /* Honour the OS setting: motion is decoration, never the only signal. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

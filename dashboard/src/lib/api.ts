@@ -50,6 +50,33 @@ export type Connector = {
   last_outcome: string; detail: string | null; items_seen: number;
   items_created: number; stale: boolean; stale_after_seconds: number;
 };
+export type TagSummary = {
+  id: string; slug: string; label: string; status: string; origin: string;
+  item_count: number; parent_count: number; child_count: number;
+};
+// `level` is signed: negative broader, 0 the seed, positive narrower. It is the
+// column index, which is why the client never has to infer direction itself.
+export type TagNode = {
+  id: string; slug: string; label: string; status: string; origin: string;
+  item_count: number; level: number;
+};
+export type TagEdge = { parent: string; child: string; relation: string };
+export type TagGraph = {
+  root: TagNode; depth: number; nodes: TagNode[];
+  edges: TagEdge[]; truncated: boolean;
+};
+export type TagTrend = {
+  tag_id: string; slug: string; label: string;
+  recent_count: number; prior_count: number; delta: number;
+  // The items behind `recent_count`. Every figure on the Insights page links
+  // through these, so a claim can be checked instead of believed.
+  sample_item_ids: string[];
+};
+export type TrendReport = {
+  window_days: number; window_start: string; window_end: string;
+  prior_start: string; total_recent: number; total_prior: number;
+  tags: TagTrend[];
+};
 export type QueueCounts = {
   queue: string; pending: number; started: number; finished: number;
   failed: number; deferred: number; scheduled: number;
@@ -90,6 +117,11 @@ export const api = {
   },
   item: (id: string) => get<ItemDetail>(`/items/${id}`),
   search: (q: string) => get<SearchResponse>(`/search?q=${encodeURIComponent(q)}`),
+  tags: () => get<TagSummary[]>("/tags"),
+  tagGraph: (id: string, depth: number) =>
+    get<TagGraph>(`/tags/${id}/graph?depth=${depth}`),
+  insights: (windowDays: number) =>
+    get<TrendReport>(`/insights?window_days=${windowDays}`),
   proposals: () => get<Proposal[]>("/proposals"),
   failures: () => get<Failure[]>("/failures"),
   connectors: () => get<Connector[]>("/connectors/health"),

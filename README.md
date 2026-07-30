@@ -159,12 +159,53 @@ back to defaults that may disagree with `.env`.
 
 ## Admin interface
 
-The admin UI is not currently implemented. The reusable read queries for
-Inbox, Item detail, Tags, Failures, and Review remain under
-[`catchment/admin/queries`](catchment/admin/queries), and the API retains
-authenticated `/internal/*` routes for atomic proposal decisions and queue
-inspection. A replacement UI must use those routes rather than duplicating
-decision logic in the browser.
+A React dashboard under [`dashboard/`](dashboard), served by Vite and talking
+to the internal API. Seven screens: Inbox, Item detail, Search, Tag graph,
+Insights, Review, and Failures & ops.
+
+```bash
+docker compose up -d internal-api      # loopback-only API on 127.0.0.1:8002
+cd dashboard && npm install && npm run dev      # http://127.0.0.1:5173
+```
+
+**This surface renders real WhatsApp and email content.** Both processes bind
+`127.0.0.1` only — never `0.0.0.0` — and the internal API has no Caddy route
+and no tunnel hostname. The public `api` service does not mount `/internal/*`
+at all, so no misconfiguration of the proxy can expose it.
+
+The shared secret is attached by the Vite proxy in Node, read from
+`CATCHMENT_INTERNAL_API_TOKEN` in the environment or `.env`. It never reaches
+client-side JavaScript and is never inlined into the bundle — anything Vite can
+inline (`define`, a `VITE_`-prefixed variable) would publish it to the browser.
+Vite refuses to start without it, because the alternative is a dashboard where
+every panel reads "403 forbidden" for reasons two processes away.
+
+Decisions on taxonomy proposals go through `POST
+/internal/proposals/{id}/decision`, which wraps the repository's
+compare-and-swap and executes an approved merge in the same transaction.
+Nothing in the browser duplicates that logic — reimplementing it client-side
+would drop the atomicity that stops two reviewers both believing they won.
+
+The reusable read queries remain under
+[`catchment/admin/queries`](catchment/admin/queries) for direct psql use.
+
+### Tag graph
+
+Seeded on any tag and expanded within the depth bound from `CLAUDE.md`. Nodes
+carry a *signed* level — negative broader, zero the seed, positive narrower —
+so the client lays the DAG out in columns rather than as a force-directed
+cloud. A physics layout would discard the one piece of structure that is
+actually known and would place the same graph differently on every reload,
+which makes drift impossible to see. A neighbourhood too large to draw is
+trimmed and says so.
+
+### Insights
+
+Counts per tag over a window against the window before it. This is the only
+screen that makes a claim about *you* rather than reporting what happened, so
+it performs no inference at all: no model call, no scoring heuristic, stated
+half-open window boundaries, and every row links to the items its number came
+from. A figure you cannot open would be a horoscope.
 
 ## Tracing (Langfuse)
 

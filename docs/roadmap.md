@@ -2,9 +2,9 @@
 
 Everything not yet built, sequenced by dependency rather than by appeal.
 
-**Status (2026-07-30):** Phases 0, 1, 2.1 and the Substack half of Phase 4 are
-built and committed. What remains is listed below with those sections marked
-DONE; the rest stands as written.
+**Status (2026-07-30):** Phases 0, 1, 2.1, 3 and the Substack half of Phase 4
+are built and committed. What remains is listed below with those sections
+marked DONE; the rest stands as written.
 
 State this is written against: the ingestion spine is proven end-to-end
 (WhatsApp → item → extraction → embedding → classification → tags), traced in
@@ -127,28 +127,39 @@ classified like any other item, end to end.
 
 ---
 
-## Phase 3 — Dashboard v2
+## Phase 3 — Dashboard v2 — DONE
 
 Deferred from v1 on purpose. Depended on Phase 0.1 — both features need a graph
-that has edges. It can have them now, though the graph will stay empty until
-enough items flow through the classifier to produce real placements.
+that has edges, which it now has.
 
-### 3.1 Tag graph explorer
+### 3.1 Tag graph explorer — DONE
 
-The thing wanted from the beginning: watching the taxonomy take shape and
-drift, rather than reading a flat table. An explorable node/edge view seeded on
-a tag, expanding within the depth bound, showing item counts and merge
-candidates.
+`GET /internal/tags` and `GET /internal/tags/{id}/graph?depth=N`, backed by
+`storage/tag_graph.py`, which reads through `TagRepository` so the
+depth-bounded CTEs stay in one place. Nodes carry a signed `level` and the
+client lays the DAG out in columns; edges are returned only when *both* ends
+are in the node set, and an oversized neighbourhood is trimmed and flagged
+rather than silently truncated.
 
-### 3.2 Insights
+### 3.2 Insights — DONE
 
-Trend detection and signal-vs-noise. What dominated the feed this week, which
-tags are accelerating, a light version of "this is becoming a project for you".
+`GET /internal/insights`, backed by `storage/insights.py`. No model call and no
+heuristic: counts between two stated half-open windows, measured on
+`ingested_at`, with the ids of the items behind every figure. Untagged items
+still count towards the totals, so a week of classifier failure cannot read as
+a quiet week.
 
-**Risk worth naming early.** This is the first feature whose output is a
-*claim about you* rather than a record of what happened. It needs to be
-obviously derived — every insight traceable to the items behind it — or it
-becomes an unfalsifiable horoscope.
+### 3.3 The dashboard could not authenticate — FIXED
+
+Found while verifying this phase, and older than it: the Vite proxy forwarded
+to the internal API without `X-Internal-Token`, so **every panel on every
+screen returned 403**. The v1 dashboard had never worked against a
+token-configured API. The proxy now attaches the secret in Node, read from the
+environment or `.env`; it never reaches client-side JavaScript, and Vite
+refuses to start without it. Confirmed absent from the built bundle.
+
+This is what the "Vite proxy token" line under *Cross-cutting* had been
+deferring. It was not cosmetic.
 
 ---
 
@@ -198,9 +209,12 @@ Designed and committed; not running.
 
 ## Cross-cutting, small
 
-- **Vite proxy token.** The dev proxy forwards to the internal API without
-  injecting `X-Internal-Token`. Loopback binding is doing the real work; decide
-  deliberately whether that is the boundary.
+- ~~**Vite proxy token.**~~ Done — see 3.3. It was not a stylistic choice; it
+  was the dashboard being unable to load anything.
+- **Frontend tests.** There is no JS test runner. `tsc --noEmit` and the
+  production build are the only gates, so the layout geometry in
+  `dashboard/src/lib/layout.ts` is verified by running the real module under
+  Node against a synthetic graph rather than by a committed test.
 - **`alembic check` in CI.** CI runs `alembic upgrade head` but never `check`,
   so a migration that has drifted from the models passes. The HNSW index is
   declared in both `models.py` and migration 0001 and must stay in step —
@@ -212,7 +226,6 @@ Designed and committed; not running.
 
 ```
 2.2 OCR ──> 2.3 transcription   (blob store and media fetch are in place)
-3.1 graph explorer ──> 3.2 insights
 4 IMAP verification ──> 4 X bookmarks
 5 recommender ──> 5 deep researcher
 6 deploy ──> 6.2 backups ──> 6.3 monitoring ──> 6.4 SSH hardening
